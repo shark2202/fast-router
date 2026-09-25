@@ -128,7 +128,35 @@ jev_scorer 模块 import OK（不实例化不触发 mlx）；task_types 挡死�
 
 **P2 = 18s/样例**：1.5B torch CPU 极慢（0.5B 2.3s → 1.5B 18s，~8 倍）。确认 torch CPU 完全不可行，必须 MLX（KV cache + Metal）或 GPU。本机 Intel Mac 跑不了 MLX。
 
-**结论**：① 范式机制 work（1.5B 跑通，分类分布有意义，A/J 达 100%）；② 模型大小是 P1 主因（+33pp 趋势）；③ 9B 外推达标（待 arm64 Mac MLX 验证）；④ torch CPU 不可行（P2 必须 MLX/GPU）。
+### 2.7 Go 版实测（zig+libllama，进程内，跨平台）
+
+**环境**：Intel Mac x86_64 / zig 0.14 / llama.cpp nightly b11175 (GGUF) / purego (不用 cgo)
+
+**Go 版 0.5B（Qwen2.5-0.5B-Instruct-GGUF Q4_K_M）**：
+- P1 = 10.0%（3/30），P2 = 1719ms
+- 与 Python 0.5B（13.3%/2349ms）量级一致（略低是 GGUF q4 量化损失）
+- 范式 Go 版复现成功（Go→purego→zig→libllama 全链跑通）
+
+**Go 版 8B（Qwen3-8B-GGUF Q4_K_M，不同系列！）**：
+- P1 = 6.7%（2/30），P2 = 9465ms
+- **低于 0.5B（10%）**——出乎预期，但根因是**不同模型系列**
+
+**跨系列对比（重要修正）**：
+
+| 模型 | 系列 | P1 | P2 | 后端 |
+|---|---|---|---|---|
+| 0.5B | Qwen2.5 | 10% | 2.3s | Python transformers |
+| 1.5B | Qwen2.5 | 47% | 18s | Python transformers |
+| 0.5B GGUF | Qwen2.5 | 10% | 1.7s | Go zig+libllama |
+| **8B GGUF** | **Qwen3** ← 不同系列 | **6.7%** | 9.5s | Go zig+libllama |
+
+**根因分析**：
+1. 8B 是 Qwen3（不是 Qwen2.5）——不同代、不同训练，不能跨系列外推
+2. 误判模式：18/30 指向 I（simple_qa）+ 10/30 指向 A（code_generation）
+3. Qwen3 有 thinking 通道，hardcoded 的 `<|im_start|>assistant\n` 格式可能没正确关闭 thinking——logits 在 thinking 位置而非 answer 位置
+4. 趋势修正：“模型越大 P1 越高”只在同系列内成立（Qwen2.5: 0.5B 10%→1.5B 47%）；跨系列不成立
+
+**结论**：8B 低不是模型太小，是模型系列差异 + chat template 适配问题。要用同系列（Qwen2.5-7B）或修 chat template（llama_chat_apply_template）验证。
 
 ---
 
@@ -137,8 +165,8 @@ jev_scorer 模块 import OK（不实例化不触发 mlx）；task_types 挡死�
 | 预测 | 状态 | 实测 | Surprise |
 |---|---|---|---|
 | P6：任务轮判定准确率 > 95% | ✅ 已验 | 100%（11/11） | 无——结构判定确定性高，与预测一致 |
-| P1：Jev 10 类分类准确率 > 70% | ❌ 已测 | 0.5B=13.3%→1.5B=46.7%（+33pp 趋势，9B 外推达标） | 模型大小是主因；0.5B/1.5B 均不达标，9B 待 arm64 Mac MLX 验证 |
-| P2：路由延迟 < 1s | ❌ 已测 | 0.5B=2349ms / 1.5B=18004ms（torch CPU） | torch 无 KV cache 全量 forward，CPU 不可行；必须 MLX/GPU |
+| P1：Jev 10 类分类准确率 > 70% | ❌ 已测 | Qwen2.5: 0.5B=10%→1.5B=47%（同系列趋势）；Qwen3-8B=6.7%（跨系列不可比） | 同系列模型大小是主因；跨系列（Qwen3）chat template 适配是额外变量；9B（Qwen3.5）待验证 |
+| P2：路由延迟 < 1s | ❌ 已测 | 0.5B torch=2.3s/1.5B=18s（CPU）；0.5B zig=1.7s/8B=9.5s（CPU） | torch/zig CPU 均 >1s；需 MLX（arm64 Mac）或 GPU |
 | P3：判据信号回流能 work | 未启动（C7，POC1 后） | — | — |
 | P4：冷启动挡死后选最便宜不降质 | 未启动（C5，POC1 后） | — | — |
 | P5：回填 LLM 提议复核通过率 < 50% | 未启动（C8，Phase 2） | — | — |
