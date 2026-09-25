@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"strings"
 	"sync"
@@ -161,6 +162,7 @@ func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (
 		return Upstream{}, "", fmt.Errorf("jev score: %w", err)
 	}
 	taskCode := resp.Answers["task_type"].Choice
+	log.Printf("[route] jev chose task_type=%s (%s) confidence=%.3f", taskCode, ByCode[taskCode].Name, resp.Answers["task_type"].Confidence)
 
 	// C4 + C5: match + select
 	surv := Match(taskCode, g.registry)
@@ -168,6 +170,7 @@ func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (
 	if err != nil {
 		return Upstream{}, "", fmt.Errorf("select: %w", err)
 	}
+	log.Printf("[route] C4 blocked %d/%d, C5 selected %s (upstream=%s)", len(g.registry)-len(surv), len(g.registry), chosen.ModelID, chosen.Upstream)
 	up, ok := g.upstreams[chosen.Upstream]
 	if !ok {
 		return Upstream{}, "", fmt.Errorf("no upstream configured for %s", chosen.Upstream)
