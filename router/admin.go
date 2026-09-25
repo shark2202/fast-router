@@ -20,6 +20,12 @@ type Admin struct {
 	cfgPath    string
 	gateway    *Gateway
 	mu         sync.Mutex
+
+	// model download state
+	downloadInProgress bool
+	downloadModel      string
+	downloadPath       string
+	downloadErr        string
 }
 
 func NewAdmin(cfg *Config, cfgPath string, gw *Gateway) *Admin {
@@ -49,6 +55,8 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "method not allowed", 405)
 		}
+	case "/api/models", "/api/models/download", "/api/models/download/status":
+		a.modelsHandler(w, r)
 	case "/api/upstream/test":
 		a.testUpstream(w, r)
 	default:
@@ -189,9 +197,13 @@ async function load(){
   h += '<h2>registry</h2><div id="regs"></div>';
   h += '<button onclick="addReg()">+ add model</button> ';
   h += '<button onclick="saveReg()">save registry</button>';
+  if(!cfg.model||!cfg.model.path){
+    h += '<h2>model (first run)</h2><div id="mdl"></div>';
+  }
   app.innerHTML = h;
   renderUps(cfg.upstreams||{});
   renderRegs(cfg.registry||[]);
+  if(!cfg.model||!cfg.model.path){loadModels();}
 }
 function renderRegs(regs){
   const d=document.getElementById('regs');d.innerHTML='';
@@ -219,6 +231,27 @@ function currentRegs(){
 async function saveReg(){
   const r=await fetch('/api/registry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(currentRegs())});
   alert(r.ok?'registry saved':'save failed');
+}
+async function loadModels(){
+  const r=await fetch('/api/models');const ms=await r.json();
+  const d=document.getElementById('mdl');
+  let h='<p>No model configured. Pick one to download:</p>';
+  ms.forEach(m=>{h+='<div class="upstream"><b>'+m.name+'</b> '+m.size+' disk, '+m.ram+' RAM '+
+    '<button onclick="dl(\''+m.id+'\')">download</button></div>';});
+  h+='<div id="dlstatus"></div>';
+  d.innerHTML=h;
+}
+async function dl(id){
+  document.getElementById('dlstatus').textContent='downloading...';
+  await fetch('/api/models/download',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({model_id:id})});
+  pollDl();
+}
+async function pollDl(){
+  const r=await fetch('/api/models/download/status');const j=await r.json();
+  const el=document.getElementById('dlstatus');
+  if(j.in_progress){el.textContent='downloading '+j.model+'...';setTimeout(pollDl,3000);}
+  else if(j.error){el.innerHTML='<span class="err">'+j.error+'</span>';}
+  else if(j.path){el.innerHTML='<span class="ok">done: '+j.path+' (config saved, reload page)</span>';}
 }
 function renderUps(ups){
   const d = document.getElementById('ups');
