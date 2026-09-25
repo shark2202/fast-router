@@ -47,6 +47,11 @@ func main() {
 		}
 	}
 
+	registry := cfg.Registry
+	if len(registry) == 0 {
+		registry = router.SeedRegistry
+	}
+
 	// Initialize the Jev scorer (zig+libllama) if model path is configured.
 	var gw *router.Gateway
 	if cfg.Model.Path != "" {
@@ -56,11 +61,11 @@ func main() {
 		}
 		defer backend.Close()
 		scorer := router.NewScorer(backend, "jev-local")
-		gw = router.NewGateway(scorer, router.SeedRegistry, cfg.ToUpstreams())
+		gw = router.NewGateway(scorer, registry, cfg.ToUpstreams())
 		log.Printf("Jev scorer ready (model=%s)", cfg.Model.Path)
 	} else {
 		// No model configured — gateway runs in hint-only mode (model-name strong hint bypasses Jev).
-		gw = router.NewGateway(nil, router.SeedRegistry, cfg.ToUpstreams())
+		gw = router.NewGateway(nil, registry, cfg.ToUpstreams())
 		log.Printf("no model configured — running in hint-only mode (set model.path via admin UI to enable Jev)")
 	}
 

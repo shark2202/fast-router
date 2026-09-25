@@ -4,21 +4,21 @@ package router
 // Mirrors litellm Deployment/ModelInfo shape (in production, capability_vector
 // would hang off ModelInfo via extra="allow"). POC plain struct.
 type ModelEntry struct {
-	ModelID          string  // "openai/gpt-5", "anthropic/claude-sonnet-4-5", ...
-	Upstream         string  // "openai" / "anthropic" / "deepseek" / ...
-	DisplayName      string
-	ContextWindow    int
-	InputCostPer1k   float64 // USD per 1K input tokens
-	OutputCostPer1k  float64
-	CapabilityVector  map[string]string // axis -> "high"|"med"|"low"|"none"  (source=声明)
-	Measured          map[string]MeasuredEntry // task_code -> measured (cold-start empty, filled by C8)
+	ModelID          string                  `json:"model_id"`
+	Upstream         string                  `json:"upstream"`
+	DisplayName      string                  `json:"display_name"`
+	ContextWindow    int                     `json:"context_window"`
+	InputCostPer1k   float64                 `json:"input_cost_per_1k"`
+	OutputCostPer1k  float64                 `json:"output_cost_per_1k"`
+	CapabilityVector map[string]string       `json:"capability_vector"`
+	Measured         map[string]MeasuredEntry `json:"measured"` // task_code -> measured (cold-start empty, filled by C8)
 }
 
 // MeasuredEntry: per (task_code, model) measured pass rate, filled by C8 回填.
 type MeasuredEntry struct {
-	PassRate   float64
-	SampleSize int
-	Status     string // "candidate" | "active"
+	PassRate   float64 `json:"pass_rate"`
+	SampleSize int     `json:"sample_size"`
+	Status     string  `json:"status"` // "candidate" | "active"
 }
 
 // SeedRegistry: 声明-level capability vectors (human-prefilled).

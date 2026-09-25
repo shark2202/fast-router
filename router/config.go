@@ -15,6 +15,7 @@ type Config struct {
 	Listen    string                  `json:"listen"`     // ":8080"
 	Model     ModelConfig             `json:"model"`      // GGUF model + lib paths
 	Upstreams map[string]UpstreamCfg  `json:"upstreams"`  // name -> upstream config
+	Registry  []ModelEntry            `json:"registry"`   // model registry (empty → SeedRegistry)
 }
 
 // ModelConfig: paths to the Jev scorer model + zig wrapper + llama.cpp libs.

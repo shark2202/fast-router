@@ -3,13 +3,70 @@
   "model": {
     "path": "",
     "lib": "zig/libfrwrapper.dylib",
-    "lib_dir": ""
+    "lib_dir": "/tmp/llama-bins/llama-b11175"
   },
   "upstreams": {
     "openai": {
       "base_url": "https://api.openai.com/v1",
-      "api_key": "sk-test",
+      "api_key": "",
+      "protocol": "openai"
+    },
+    "anthropic": {
+      "base_url": "https://api.anthropic.com",
+      "api_key": "",
+      "protocol": "anthropic"
+    },
+    "deepseek": {
+      "base_url": "https://api.deepseek.com/v1",
+      "api_key": "",
       "protocol": "openai"
     }
-  }
+  },
+  "registry": [
+    {
+      "model_id": "gpt-6-luna",
+      "upstream": "openai",
+      "display_name": "GPT-6 Luna",
+      "context_window": 200000,
+      "input_cost_per_1k": 5.0,
+      "output_cost_per_1k": 15.0,
+      "capability_vector": {
+        "code": "high", "reasoning": "high", "long_context": "high",
+        "tool_use": "high", "vision": "high", "multilingual": "high",
+        "general": "high", "structured_output": "high", "creative": "high",
+        "instruction_follow": "high", "math": "high"
+      },
+      "measured": {}
+    },
+    {
+      "model_id": "claude-sonnet-4-5",
+      "upstream": "anthropic",
+      "display_name": "Claude Sonnet 4.5",
+      "context_window": 200000,
+      "input_cost_per_1k": 3.0,
+      "output_cost_per_1k": 15.0,
+      "capability_vector": {
+        "code": "high", "reasoning": "high", "long_context": "high",
+        "tool_use": "high", "vision": "high", "multilingual": "high",
+        "general": "high", "structured_output": "high", "creative": "high",
+        "instruction_follow": "high", "math": "high"
+      },
+      "measured": {}
+    },
+    {
+      "model_id": "deepseek-chat",
+      "upstream": "deepseek",
+      "display_name": "DeepSeek V3",
+      "context_window": 64000,
+      "input_cost_per_1k": 0.27,
+      "output_cost_per_1k": 1.1,
+      "capability_vector": {
+        "code": "high", "reasoning": "high", "long_context": "med",
+        "tool_use": "low", "vision": "none", "multilingual": "med",
+        "general": "high", "structured_output": "high", "creative": "med",
+        "instruction_follow": "high", "math": "high"
+      },
+      "measured": {}
+    }
+  ]
 }
