@@ -36,6 +36,17 @@ type Gateway struct {
 	upstreams map[string]Upstream // by ModelEntry.Upstream
 	client    *http.Client
 	mu        sync.Mutex // guards upstreams (hot-reload via Admin)
+
+	// session state: cache the last route per session key, so tool-loop
+	// continuations (TurnKind != NewTaskTurn) inherit the prior route.
+	sessions   map[string]cachedRoute
+	sessionsMu sync.Mutex
+}
+
+type cachedRoute struct {
+	upstream  string
+	modelID  string
+	protocol string
 }
 
 func NewGateway(scorer *Scorer, registry []ModelEntry, upstreams map[string]Upstream) *Gateway {
@@ -130,9 +141,20 @@ func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (
 	defer g.mu.Unlock()
 	// C2: task-turn detection
 	kind, _ := DetectTurn(messages, protocol)
+
+	// session key: hash of message history (or X-Session-Id header — TODO)
+	sessionKey := sessionKey(messages)
+
+	// if not a new task turn (tool-loop or ambiguous), inherit prior route
 	if kind != NewTaskTurn {
-		// tool-loop continuation or ambiguous — would inherit prior route.
-		// POC: no session state yet, fall through to re-route (TODO: session lock).
+		g.sessionsMu.Lock()
+		if cached, ok := g.sessions[sessionKey]; ok {
+			up := g.upstreams[cached.upstream]
+			g.sessionsMu.Unlock()
+			return up, cached.modelID, nil
+		}
+		g.sessionsMu.Unlock()
+		// no prior route cached — fall through to route (first call in session)
 	}
 
 	// strong hint: model name with upstream prefix bypasses Jev
@@ -185,6 +207,13 @@ func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (
 	if !ok {
 		return Upstream{}, "", fmt.Errorf("no upstream configured for %s", chosen.Upstream)
 	}
+	// cache route for this session (tool-loop continuations inherit it)
+	g.sessionsMu.Lock()
+	if g.sessions == nil {
+		g.sessions = make(map[string]cachedRoute)
+	}
+	g.sessions[sessionKey] = cachedRoute{upstream: chosen.Upstream, modelID: chosen.ModelID, protocol: protocol}
+	g.sessionsMu.Unlock()
 	return up, chosen.ModelID, nil
 }
 
@@ -196,7 +225,30 @@ func (g *Gateway) defaultUpstream() Upstream {
 	return Upstream{}
 }
 
-// strongHint: "anthropic/claude-sonnet-4-5" -> model_id, bypassing Jev.
+// sessionKey: derive a session key from the message history.
+// Messages up to (but not including) the last user message form the session
+// identity — tool-loop continuations share the same key.
+// TODO: also accept X-Session-Id header for explicit session control.
+func sessionKey(messages []map[string]any) string {
+	if len(messages) <= 1 {
+		return "single"
+	}
+	// hash all messages except the last (the last changes per turn)
+	h := uint64(0)
+	for i := 0; i < len(messages)-1; i++ {
+		m := messages[i]
+		role, _ := m["role"].(string)
+		h = h*31 + uint64(len(role))
+		// include content hash (simplified: length + first chars)
+		if content, ok := m["content"].(string); ok {
+			h = h*31 + uint64(len(content))
+			if len(content) > 0 {
+				h = h*31 + uint64(content[0])
+			}
+		}
+	}
+	return fmt.Sprintf("s%x", h)
+}
 func strongHint(model string) (string, bool) {
 	for _, sep := range []string{"/", ":"} {
 		for i := 0; i < len(model); i++ {

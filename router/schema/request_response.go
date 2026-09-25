@@ -13,7 +13,6 @@ func anthropicToOpenAI(body []byte) []byte {
 	if json.Unmarshal(body, &m) != nil {
 		return body
 	}
-	// extract top-level system → prepend as role:"system" message
 	var msgs []map[string]any
 	if raw, ok := m["messages"]; ok {
 		json.Unmarshal(raw, &msgs)
@@ -24,16 +23,64 @@ func anthropicToOpenAI(body []byte) []byte {
 		sysMsg := map[string]any{"role": "system", "content": sysText}
 		msgs = append([]map[string]any{sysMsg}, msgs...)
 	}
+	// convert Anthropic messages to OpenAI format
+	var openAIMsgs []map[string]any
+	for _, msg := range msgs {
+		openAIMsgs = append(openAIMsgs, anthropicMsgToOpenAI(msg)...)
+	}
 	out := make(map[string]any)
 	for k, v := range m {
-		if k == "system" || k == "messages" {
+		if k == "system" || k == "messages" || k == "tools" {
 			continue
 		}
 		out[k] = jget(v)
 	}
-	out["messages"] = msgs
+	out["messages"] = openAIMsgs
+	// convert tools: Anthropic {name,description,input_schema} → OpenAI {type:function,function:{...}}
+	if rawTools, ok := m["tools"]; ok {
+		var tools []any
+		json.Unmarshal(rawTools, &tools)
+		out["tools"] = convertAnthropicToolsToOpenAI(tools)
+	}
 	b, _ := json.Marshal(out)
 	return b
+}
+
+// anthropicMsgToOpenAI: convert one Anthropic message to OpenAI message(s).
+// assistant with tool_use → OpenAI assistant with tool_calls.
+// user with tool_result → multiple OpenAI tool messages (one per result block).
+func anthropicMsgToOpenAI(msg map[string]any) []map[string]any {
+	role, _ := msg["role"].(string)
+	if role == "assistant" {
+		content, _ := msg["content"].([]any)
+		text, toolCalls := anthropicToolUseToOpenAI(content)
+		result := map[string]any{"role": "assistant"}
+		if text != "" {
+			result["content"] = text
+		}
+		if len(toolCalls) > 0 {
+			result["tool_calls"] = toolCalls
+		}
+		return []map[string]any{result}
+	}
+	if role == "user" {
+		content, _ := msg["content"].([]any)
+		if hasToolResult(content) {
+			return anthropicToolResultToOpenAI(msg)
+		}
+	}
+	return []map[string]any{msg}
+}
+
+func hasToolResult(content []any) bool {
+	for _, blk := range content {
+		if b, ok := blk.(map[string]any); ok {
+			if t, _ := b["type"].(string); t == "tool_result" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // --- OpenAI request → Anthropic request ---
@@ -47,7 +94,6 @@ func openAIToAnthropic(body []byte) []byte {
 	if raw, ok := m["messages"]; ok {
 		json.Unmarshal(raw, &msgs)
 	}
-	// extract system messages → top-level system
 	var system any
 	var filtered []map[string]any
 	for _, msg := range msgs {
@@ -57,9 +103,14 @@ func openAIToAnthropic(body []byte) []byte {
 		}
 		filtered = append(filtered, msg)
 	}
+	// convert OpenAI messages to Anthropic format
+	var anthMsgs []map[string]any
+	for _, msg := range filtered {
+		anthMsgs = append(anthMsgs, openAIMsgToAnthropic(msg))
+	}
 	out := make(map[string]any)
 	for k, v := range m {
-		if k == "messages" {
+		if k == "messages" || k == "tools" {
 			continue
 		}
 		out[k] = jget(v)
@@ -67,9 +118,33 @@ func openAIToAnthropic(body []byte) []byte {
 	if system != nil {
 		out["system"] = system
 	}
-	out["messages"] = filtered
+	out["messages"] = anthMsgs
+	// convert tools: OpenAI {type:function,function:{...}} → Anthropic {name,description,input_schema}
+	if rawTools, ok := m["tools"]; ok {
+		var tools []any
+		json.Unmarshal(rawTools, &tools)
+		out["tools"] = convertOpenAIToolsToAnthropic(tools)
+	}
 	b, _ := json.Marshal(out)
 	return b
+}
+
+// openAIMsgToAnthropic: convert one OpenAI message to Anthropic format.
+// assistant with tool_calls → Anthropic assistant with content blocks (text + tool_use).
+// tool message → Anthropic user message with tool_result content block.
+func openAIMsgToAnthropic(msg map[string]any) map[string]any {
+	role, _ := msg["role"].(string)
+	if role == "assistant" {
+		if _, hasToolCalls := msg["tool_calls"]; hasToolCalls {
+			content := openAIToolCallsToAnthropic(msg)
+			return map[string]any{"role": "assistant", "content": content}
+		}
+		return msg
+	}
+	if role == "tool" {
+		return openAIToolResultToAnthropic(msg)
+	}
+	return msg
 }
 
 // --- OpenAI response → Anthropic response ---

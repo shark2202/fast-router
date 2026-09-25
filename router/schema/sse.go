@@ -44,10 +44,32 @@ func (c *SSEConverter) openAIChunkToAnthropic(data []byte) []string {
 		cbs, _ := json.Marshal(map[string]any{"type": "content_block_start", "index": 0, "content_block": map[string]any{"type": "text", "text": ""}})
 		out = append(out, "event: content_block_start\ndata: "+string(cbs)+"\n\n")
 	}
-	// content delta
+	// content delta (text)
 	if content, ok := delta["content"].(string); ok && content != "" {
 		cbd, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": 0, "delta": map[string]any{"type": "text_delta", "text": content}})
 		out = append(out, "event: content_block_delta\ndata: "+string(cbd)+"\n\n")
+	}
+	// tool_calls delta → content_block_start (tool_use) + input_json_delta
+	if toolCalls, ok := delta["tool_calls"].([]any); ok {
+		for _, tc := range toolCalls {
+			tcm, ok := tc.(map[string]any)
+			if !ok {
+				continue
+			}
+			fn, _ := tcm["function"].(map[string]any)
+			idx := int(tcm["index"].(float64)) // OpenAI delta tool_call has index
+			// first delta of this tool_call: content_block_start (tool_use)
+			if tcm["id"] != nil {
+				name, _ := fn["name"].(string)
+				cbs, _ := json.Marshal(map[string]any{"type": "content_block_start", "index": idx + 1, "content_block": map[string]any{"type": "tool_use", "id": tcm["id"], "name": name, "input": map[string]any{}}})
+				out = append(out, "event: content_block_start\ndata: "+string(cbs)+"\n\n")
+			}
+			// arguments delta → input_json_delta
+			if args, ok := fn["arguments"].(string); ok && args != "" {
+				cbd, _ := json.Marshal(map[string]any{"type": "content_block_delta", "index": idx + 1, "delta": map[string]any{"type": "input_json_delta", "partial_json": args}})
+				out = append(out, "event: content_block_delta\ndata: "+string(cbd)+"\n\n")
+			}
+		}
 	}
 	// finish
 	if finish != "" {
