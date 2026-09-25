@@ -1,0 +1,28 @@
+# Python build/cache
+__pycache__/
+*.egg-info/
+*.pyc
+.pytest_cache/
+
+# Go build artifacts
+/fast-router
+*.exe
+*.test
+
+# zig build artifacts
+zig/zig-out/
+zig/.zig-cache/
+zig/*.dylib
+zig/*.so
+zig/*.dll
+zig/*.o
+
+# llama.cpp libraries (downloaded per-platform, not version-controlled)
+lib/
+
+# model weights (downloaded on demand)
+*.gguf
+models/
+
+# OS files
+.DS_Store
