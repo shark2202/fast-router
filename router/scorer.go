@@ -13,6 +13,7 @@ package router
 
 import (
 	"errors"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -56,8 +57,18 @@ type Answer struct {
 // Backend scores candidate code labels for a prompt. The impl tokenizes the
 // prompt, verifies each code is a single token, runs one forward pass, and
 // returns the raw logit for each candidate (in order). Go-side softmaxes.
+//
+// ExtendedBackend adds yes/no scoring + chat template (for per-candidate method).
 type Backend interface {
 	ChoiceScore(prompt string, candidateCodes []string) (logits []float64, usage Usage, err error)
+}
+
+// ExtendedBackend: Backend + yes/no + chat template (for per-candidate method).
+type ExtendedBackend interface {
+	Backend
+	ScoreYesNo(prompts []string, yesTokenID int32) ([]float64, Usage, error)
+	GetTokenID(word string) (int32, error)
+	ApplyChatTemplate(messages string, addAssistant bool) (string, error)
 }
 
 // --- C3 scorer: Choice logic over a Backend ---
@@ -81,7 +92,15 @@ func (s *Scorer) Score(req System1Request) (System1Response, error) {
 	for id, q := range req.Questions {
 		switch q.Type {
 		case "choice":
-			ans, in, out, err := s.scoreChoice(req.State, q)
+			// Try yes/no method first (ExtendedBackend), fall back to single-token
+			var ans Answer
+			var in, out int
+			var err error
+			if _, ok := s.backend.(ExtendedBackend); ok {
+				ans, in, out, err = s.scoreChoiceYesNo(req.State, q)
+			} else {
+				ans, in, out, err = s.scoreChoice(req.State, q)
+			}
 			if err != nil {
 				return System1Response{}, err
 			}
@@ -117,7 +136,7 @@ func (s *Scorer) scoreChoice(state string, q Question) (Answer, int, int, error)
 	if len(logits) != len(options) {
 		return Answer{}, 0, 0, errors.New("backend returned wrong number of logits")
 	}
-	probs := softmax(logits)
+	probs := softmaxFloat64(logits)
 	probMap := make(map[string]float64, len(options))
 	for i, opt := range options {
 		probMap[opt] = probs[i]
@@ -197,7 +216,7 @@ func buildChoicePrompt(instructions string, options, codes []string, criteria ma
 	return b.String()
 }
 
-func softmax(scores []float64) []float64 {
+func softmaxFloat64(scores []float64) []float64 {
 	if len(scores) == 0 {
 		return nil
 	}
@@ -218,4 +237,62 @@ func softmax(scores []float64) []float64 {
 		out[i] = e / sum
 	}
 	return out
+}
+
+// scoreChoiceYesNo: per-candidate yes/no evaluation (LLM2Jev method).
+// Uses chat template (auto-adapt) + yes/no scoring (no position bias).
+func (s *Scorer) scoreChoiceYesNo(state string, q Question) (Answer, int, int, error) {
+	ext, ok := s.backend.(ExtendedBackend)
+	if !ok {
+		return s.scoreChoice(state, q)
+	}
+	// Get "yes" token id
+yesID, err := ext.GetTokenID("yes")
+	if err != nil {
+		return Answer{}, 0, 0, fmt.Errorf("get yes token: %w", err)
+	}
+	// Build per-candidate prompts with chat template
+	options := orderedOptions(q.Criteria)
+	prompts := make([]string, len(options))
+	for i, opt := range options {
+		rubric := q.Criteria[opt]
+		msgs := fmt.Sprintf(`[{"role":"user","content":"%s\nQuestion: Is this about \"%s\" (%s)? Answer yes or no."}]`,
+			escapeJSON(state), escapeJSON(opt), escapeJSON(rubric))
+		prompt, err := ext.ApplyChatTemplate(msgs, true)
+		if err != nil {
+			return Answer{}, 0, 0, fmt.Errorf("apply template: %w", err)
+		}
+		prompts[i] = prompt
+	}
+	// Score each candidate
+logits, usage, err := ext.ScoreYesNo(prompts, yesID)
+	if err != nil {
+		return Answer{}, 0, 0, err
+	}
+	probs := softmaxFloat64(logits)
+	probMap := make(map[string]float64, len(options))
+	for i, opt := range options {
+		probMap[opt] = probs[i]
+	}
+	bestIdx := 0
+	for i := range probs {
+		if probs[i] > probs[bestIdx] {
+			bestIdx = i
+		}
+	}
+	return Answer{
+		Type:          "choice",
+		Choice:        options[bestIdx],
+		Probabilities: probMap,
+		Confidence:    probs[bestIdx],
+	}, usage.InputTokens, usage.OutputTokens, nil
+}
+
+func escapeJSON(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	s = strings.ReplaceAll(s, "\n", "\\n")
+	s = strings.ReplaceAll(s, "\r", "\\r")
+	s = strings.ReplaceAll(s, "\t", "\\t")
+	return s
 }

@@ -112,7 +112,7 @@ func TestCandidateCodeLabelsAtoJ(t *testing.T) {
 }
 
 func TestSoftmaxSumsToOne(t *testing.T) {
-	probs := softmax([]float64{1.0, 2.0, 3.0})
+	probs := softmaxFloat64([]float64{1.0, 2.0, 3.0})
 	var sum float64
 	for _, p := range probs {
 		sum += p

@@ -24,6 +24,7 @@ type zigBackend struct {
 	frScore func(h unsafe.Pointer, prompt *byte, promptLen uintptr, codes **byte, nCands int32, out *float32) int32
 	frScoreYesno func(h unsafe.Pointer, prompt *byte, promptLen uintptr, yesTokenId int32, outLogit *float32) int32
 	frGetTokenId func(h unsafe.Pointer, word *byte, wordLen uintptr) int32
+	frApplyTemplate func(h unsafe.Pointer, msgsJson *byte, msgsLen uintptr, outBuf *byte, outBufLen uintptr, addAss bool) int32
 	frFree  func(h unsafe.Pointer)
 	handle unsafe.Pointer
 }
@@ -43,6 +44,7 @@ func NewZigBackend(libPath, modelPath string) (*zigBackend, error) {
 	purego.RegisterLibFunc(&b.frScore, lib, "fr_score")
 	purego.RegisterLibFunc(&b.frScoreYesno, lib, "fr_score_yesno")
 	purego.RegisterLibFunc(&b.frGetTokenId, lib, "fr_get_token_id")
+	purego.RegisterLibFunc(&b.frApplyTemplate, lib, "fr_apply_template")
 	purego.RegisterLibFunc(&b.frFree, lib, "fr_free")
 	// fr_load takes a null-terminated C string.
 	cpath, err := cString(modelPath)
@@ -97,6 +99,21 @@ func (b *zigBackend) GetTokenID(word string) (int32, error) {
 		return 0, fmt.Errorf("'%s' is not a single token (code %d)", word, id)
 	}
 	return id, nil
+}
+
+// ApplyChatTemplate: uses llama_chat_apply_template (auto-adapt model's template).
+// messages: JSON array of [{role, content}, ...]
+// addAssistant: whether to append assistant prompt (true for scoring)
+// Returns the formatted prompt string.
+func (b *zigBackend) ApplyChatTemplate(messages string, addAssistant bool) (string, error) {
+	cmsgs, _ := cString(messages)
+	defer cStringFree(cmsgs)
+	buf := make([]byte, 16384)
+	ret := b.frApplyTemplate(b.handle, cmsgs, uintptr(len(messages)), &buf[0], uintptr(len(buf)), addAssistant)
+	if ret < 0 {
+		return "", fmt.Errorf("fr_apply_template failed (code %d)", ret)
+	}
+	return string(buf[:ret]), nil
 }
 
 // Close releases the model/context.
