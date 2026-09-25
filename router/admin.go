@@ -40,6 +40,15 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		default:
 			http.Error(w, "method not allowed", 405)
 		}
+	case "/api/registry":
+		switch r.Method {
+		case http.MethodGet:
+			a.getRegistry(w, r)
+		case http.MethodPost:
+			a.postRegistry(w, r)
+		default:
+			http.Error(w, "method not allowed", 405)
+		}
 	case "/api/upstream/test":
 		a.testUpstream(w, r)
 	default:
@@ -81,7 +90,39 @@ func (a *Admin) postConfig(w http.ResponseWriter, r *http.Request) {
 	fmt.Fprint(w, `{"ok":true}`)
 }
 
-// testUpstream: POST /api/upstream/test {name, base_url, api_key, protocol}
+func (a *Admin) getRegistry(w http.ResponseWriter, r *http.Request) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(a.cfg.Registry)
+}
+
+func (a *Admin) postRegistry(w http.ResponseWriter, r *http.Request) {
+	body, err := io.ReadAll(r.Body)
+	if err != nil {
+		http.Error(w, err.Error(), 400)
+		return
+	}
+	var reg []ModelEntry
+	if err := json.Unmarshal(body, &reg); err != nil {
+		http.Error(w, "invalid registry: "+err.Error(), 400)
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cfg.Registry = reg
+	if err := a.cfg.Save(a.cfgPath); err != nil {
+		http.Error(w, "save: "+err.Error(), 500)
+		return
+	}
+	if a.gateway != nil {
+		a.gateway.SetRegistry(reg)
+	}
+	w.WriteHeader(200)
+	fmt.Fprint(w, `{"ok":true}`)
+}
+
+// testUpstream: POST /api/upstream/test
 // → tries a GET {base_url}/models (OpenAI) or /v1/messages (Anthropic HEAD).
 func (a *Admin) testUpstream(w http.ResponseWriter, r *http.Request) {
 	var req struct {
@@ -145,8 +186,39 @@ async function load(){
   h += '<h2>upstreams</h2><div id="ups"></div>';
   h += '<button onclick="addUp()">+ add upstream</button> ';
   h += '<button onclick="save()">save</button>';
+  h += '<h2>registry</h2><div id="regs"></div>';
+  h += '<button onclick="addReg()">+ add model</button> ';
+  h += '<button onclick="saveReg()">save registry</button>';
   app.innerHTML = h;
   renderUps(cfg.upstreams||{});
+  renderRegs(cfg.registry||[]);
+}
+function renderRegs(regs){
+  const d=document.getElementById('regs');d.innerHTML='';
+  regs.forEach((m,i)=>{
+    d.innerHTML+='<div class="upstream"><b>'+m.model_id+'</b> ('+m.upstream+')'+
+      '<label>model_id <input class="mid" data-i="'+i+'" value="'+m.model_id+'"></label>'+
+      '<label>upstream <input class="mup" data-i="'+i+'" value="'+m.upstream+'"></label>'+
+      '<label>cost in/1k <input class="mci" data-i="'+i+'" value="'+m.input_cost_per_1k+'"></label>'+
+      '<button onclick="delReg('+i+')">delete</button></div>';
+  });
+}
+function addReg(){
+  const regs=currentRegs();regs.push({model_id:'new-model',upstream:'openai',display_name:'New',context_window:128000,input_cost_per_1k:1,output_cost_per_1k:2,capability_vector:{code:'high',reasoning:'high',general:'high',long_context:'med',tool_use:'med',vision:'none',multilingual:'med',structured_output:'high',creative:'med',instruction_follow:'high',math:'high'},measured:{}});
+  renderRegs(regs);
+}
+function delReg(i){const r=currentRegs();r.splice(i,1);renderRegs(r);}
+function currentRegs(){
+  const regs=[];
+  document.querySelectorAll('#regs .upstream').forEach(d=>{
+    const i=+d.querySelector('.mid').dataset.i;
+    regs[i]={model_id:d.querySelector('.mid').value,upstream:d.querySelector('.mup').value,display_name:d.querySelector('.mid').value,context_window:128000,input_cost_per_1k:+d.querySelector('.mci').value||1,output_cost_per_1k:2,capability_vector:{code:'high',reasoning:'high',general:'high',long_context:'med',tool_use:'med',vision:'none',multilingual:'med',structured_output:'high',creative:'med',instruction_follow:'high',math:'high'},measured:{}};
+  });
+  return regs;
+}
+async function saveReg(){
+  const r=await fetch('/api/registry',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(currentRegs())});
+  alert(r.ok?'registry saved':'save failed');
 }
 function renderUps(ups){
   const d = document.getElementById('ups');
