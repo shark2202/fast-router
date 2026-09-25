@@ -49,6 +49,13 @@ func (g *Gateway) SetUpstreams(upstreams map[string]Upstream) {
 	g.upstreams = upstreams
 }
 
+// SetRegistry hot-reloads the model registry (called by Admin on config save).
+func (g *Gateway) SetRegistry(registry []ModelEntry) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.registry = registry
+}
+
 // ServeHTTP routes by path to the OpenAI or Anthropic handler.
 func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch r.URL.Path {
@@ -249,9 +256,14 @@ func (g *Gateway) rewriteAnthropicModel(body []byte, modelID string) []byte {
 // (OpenAI↔Anthropic) when client and upstream protocols differ.
 func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, path string, body []byte, clientProto string) {
 	upstreamProto := up.Protocol
+	// path determined by upstream protocol (not client endpoint)
+	upPath := "/v1/chat/completions"
+	if upstreamProto == "anthropic" {
+		upPath = "/v1/messages"
+	}
 	// convert request body if protocols differ
 	body, _ = schema.ConvertRequest(body, clientProto, upstreamProto)
-	url := up.BaseURL + path
+	url := up.BaseURL + upPath
 	url = strings.Replace(url, "/v1/v1/", "/v1/", 1)
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(body))
 	if err != nil {
