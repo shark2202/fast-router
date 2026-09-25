@@ -109,6 +109,27 @@ jev_scorer 模块 import OK（不实例化不触发 mlx）；task_types 挡死�
 
 **结论**：**P1 低主要是模型太小，不是 prompt 问题**。0.5B 做不了 10 类细粒度分类，prompt 优化对它帮助有限。需更大模型（≥9B 或至少 1.5B/3B）验证 P1 是否达标。
 
+### 2.6 1.5B 实测（验证“模型大小是 P1 主因”）
+
+**模型**：Qwen2.5-1.5B-Instruct（modelscope 下载 ~3GB，5MB/s 约 10min）。
+**结果**：P1 = 46.7%（14/30），P2 = 18004ms（1.5B torch CPU 极慢，~18s/样例）。
+
+**对比**：
+
+| 模型 | P1 | P2 |
+|---|---|---|
+| 0.5B（v0 prompt）| 13.3% | 2349ms |
+| 0.5B（v1 prompt +MAIN ACTION）| 16.7% | — |
+| **1.5B** | **46.7%** | 18004ms |
+
+**P1 从 0.5B→1.5B 提升 +33pp（13.3%→46.7%）**——确认“P1 低主要是模型太小”。1.5B 仍不达 70%，但趋势外推：9B 很可能达标（设计共识 Q9(d) “9B 起步验证范式”的判断得到强力支撑）。
+
+**per-class**：A code_generation 100%、J translation 100%（明确任务 1.5B 已精通）；D/E 67%；B/C/G/H 33%；F creative_writing 0%、I simple_qa 0%（1.5B 分不清创意写作和简单问答——疑似两类边界模糊）。
+
+**P2 = 18s/样例**：1.5B torch CPU 极慢（0.5B 2.3s → 1.5B 18s，~8 倍）。确认 torch CPU 完全不可行，必须 MLX（KV cache + Metal）或 GPU。本机 Intel Mac 跑不了 MLX。
+
+**结论**：① 范式机制 work（1.5B 跑通，分类分布有意义，A/J 达 100%）；② 模型大小是 P1 主因（+33pp 趋势）；③ 9B 外推达标（待 arm64 Mac MLX 验证）；④ torch CPU 不可行（P2 必须 MLX/GPU）。
+
 ---
 
 ## 第三章 预测对照（DecisionRecord 事后校准预留）
@@ -116,8 +137,8 @@ jev_scorer 模块 import OK（不实例化不触发 mlx）；task_types 挡死�
 | 预测 | 状态 | 实测 | Surprise |
 |---|---|---|---|
 | P6：任务轮判定准确率 > 95% | ✅ 已验 | 100%（11/11） | 无——结构判定确定性高，与预测一致 |
-| P1：Jev 10 类分类准确率 > 70% | ❌ 已测 | 13.3%（0.5B，4/30） | 0.5B 远低于预期——小模型不够做 10 类细粒度分类；待 1.5B/3B 区分“模型太小 vs prompt” |
-| P2：路由延迟 < 1s | ❌ 已测 | 2349ms（0.5B torch CPU） | torch 后端无 KV cache 全量 forward，CPU 慢；MLX 后端（KV cache）待 arm64 mac |
+| P1：Jev 10 类分类准确率 > 70% | ❌ 已测 | 0.5B=13.3%→1.5B=46.7%（+33pp 趋势，9B 外推达标） | 模型大小是主因；0.5B/1.5B 均不达标，9B 待 arm64 Mac MLX 验证 |
+| P2：路由延迟 < 1s | ❌ 已测 | 0.5B=2349ms / 1.5B=18004ms（torch CPU） | torch 无 KV cache 全量 forward，CPU 不可行；必须 MLX/GPU |
 | P3：判据信号回流能 work | 未启动（C7，POC1 后） | — | — |
 | P4：冷启动挡死后选最便宜不降质 | 未启动（C5，POC1 后） | — | — |
 | P5：回填 LLM 提议复核通过率 < 50% | 未启动（C8，Phase 2） | — | — |
