@@ -166,13 +166,41 @@ func openAIResponseToAnthropic(body []byte) []byte {
 	content, _ := msg["content"].(string)
 	finish, _ := choice["finish_reason"].(string)
 
+	// build content blocks
+	var blocks []any
+	if content != "" {
+		blocks = append(blocks, map[string]any{"type": "text", "text": content})
+	}
+	// convert tool_calls to tool_use blocks
+	if toolCalls, ok := msg["tool_calls"].([]any); ok {
+		for _, tc := range toolCalls {
+			tcm, ok := tc.(map[string]any)
+			if !ok {
+				continue
+			}
+			fn, _ := tcm["function"].(map[string]any)
+			if fn == nil {
+				continue
+			}
+			name, _ := fn["name"].(string)
+			argsStr, _ := fn["arguments"].(string)
+			var input map[string]any
+			json.Unmarshal([]byte(argsStr), &input)
+			id, _ := tcm["id"].(string)
+			blocks = append(blocks, map[string]any{
+				"type":  "tool_use",
+				"id":    id,
+				"name":  name,
+				"input": input,
+			})
+		}
+	}
+
 	out := map[string]any{
 		"id":   m["id"],
 		"type": "message",
 		"role": "assistant",
-		"content": []map[string]any{
-			{"type": "text", "text": content},
-		},
+		"content": blocks,
 		"model":       m["model"],
 		"stop_reason": openAIToAnthropicStop(finish),
 	}
