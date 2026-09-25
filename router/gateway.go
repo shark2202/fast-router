@@ -8,6 +8,7 @@
 package router
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+
+	"fast-router/router/schema"
 )
 
 // Upstream: a real LLM backend to forward to.
@@ -242,10 +245,13 @@ func (g *Gateway) rewriteAnthropicModel(body []byte, modelID string) []byte {
 	return g.rewriteOpenAIModel(body, modelID) // same patch
 }
 
-// forward: send to upstream + stream response back (SSE passthrough via io.Copy).
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, path string, body []byte, protocol string) {
+// forward: send to upstream + stream response back, with schema conversion
+// (OpenAI↔Anthropic) when client and upstream protocols differ.
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, path string, body []byte, clientProto string) {
+	upstreamProto := up.Protocol
+	// convert request body if protocols differ
+	body, _ = schema.ConvertRequest(body, clientProto, upstreamProto)
 	url := up.BaseURL + path
-	// dedupe /v1/v1 (OpenAI base_url already includes /v1)
 	url = strings.Replace(url, "/v1/v1/", "/v1/", 1)
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(body))
 	if err != nil {
@@ -253,7 +259,7 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, p
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if protocol == "anthropic" {
+	if upstreamProto == "anthropic" {
 		req.Header.Set("x-api-key", up.APIKey)
 		req.Header.Set("anthropic-version", "2023-06-01")
 	} else {
@@ -265,12 +271,49 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, p
 		return
 	}
 	defer resp.Body.Close()
-	// passthrough headers + body (SSE chunks stream through io.Copy)
-	for k, vs := range resp.Header {
-		for _, v := range vs {
-			w.Header().Add(k, v)
+
+	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
+	needConvert := clientProto != upstreamProto
+
+	if isStream && needConvert {
+		// SSE: convert each chunk between protocols
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(resp.StatusCode)
+		flusher, _ := w.(http.Flusher)
+		conv := schema.NewSSEConverter(upstreamProto, clientProto)
+		scanner := bufio.NewScanner(resp.Body)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
+			data := strings.TrimPrefix(line, "data: ")
+			if conv.IsDone([]byte(data)) {
+				w.Write([]byte("data: [DONE]\n\n"))
+				if flusher != nil { flusher.Flush() }
+				break
+			}
+			for _, out := range conv.ConvertChunk([]byte(data)) {
+				w.Write([]byte(out))
+			}
+			if flusher != nil { flusher.Flush() }
 		}
+	} else if needConvert {
+		// non-stream: convert response body
+		respBody, _ := io.ReadAll(resp.Body)
+		respBody = schema.ConvertResponse(respBody, upstreamProto, clientProto)
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(resp.StatusCode)
+		w.Write(respBody)
+	} else {
+		// same protocol: passthrough headers + body (SSE streams through io.Copy)
+		for k, vs := range resp.Header {
+			for _, v := range vs {
+				w.Header().Add(k, v)
+			}
+		}
+		w.WriteHeader(resp.StatusCode)
+		io.Copy(w, resp.Body)
 	}
-	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
 }
