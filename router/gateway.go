@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"sync"
 )
 
@@ -134,6 +135,11 @@ func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (
 		}
 	}
 
+	// hint-only mode (no scorer configured): skip Jev, use default upstream + client model.
+	if g.scorer == nil {
+		return g.defaultUpstream(), modelHint, nil
+	}
+
 	// extract state from last user message
 	state := lastUserText(messages, protocol)
 	if state == "" {
@@ -167,6 +173,14 @@ func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (
 		return Upstream{}, "", fmt.Errorf("no upstream configured for %s", chosen.Upstream)
 	}
 	return up, chosen.ModelID, nil
+}
+
+// defaultUpstream returns the first configured upstream (hint-only fallback).
+func (g *Gateway) defaultUpstream() Upstream {
+	for _, u := range g.upstreams {
+		return u
+	}
+	return Upstream{}
 }
 
 // strongHint: "anthropic/claude-sonnet-4-5" -> model_id, bypassing Jev.
@@ -228,6 +242,8 @@ func (g *Gateway) rewriteAnthropicModel(body []byte, modelID string) []byte {
 // forward: send to upstream + stream response back (SSE passthrough via io.Copy).
 func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, path string, body []byte, protocol string) {
 	url := up.BaseURL + path
+	// dedupe /v1/v1 (OpenAI base_url already includes /v1)
+	url = strings.Replace(url, "/v1/v1/", "/v1/", 1)
 	req, err := http.NewRequestWithContext(r.Context(), r.Method, url, bytes.NewReader(body))
 	if err != nil {
 		http.Error(w, "build request: "+err.Error(), 500)
