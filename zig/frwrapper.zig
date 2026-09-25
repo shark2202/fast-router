@@ -239,6 +239,16 @@ fn parseMessages(json: [*]const u8, json_len: usize, out: [*]c.llama_chat_messag
     return count;
 }
 
+// fr_get_token_id: tokenize a single word, return its token id (or -1 if multi-token).
+export fn fr_get_token_id(h: ?*Handle, word: [*]const u8, word_len: usize) c_int {
+    const handle = h orelse return -1;
+    const vocab = c.llama_model_get_vocab(handle.model orelse return -3);
+    var ids: [8]c.llama_token = undefined;
+    const m = c.llama_tokenize(vocab, word, @intCast(word_len), &ids, ids.len, false, false);
+    if (m != 1) return -6;
+    return ids[0];
+}
+
 export fn fr_free(h: ?*Handle) void {
     const handle = h orelse return;
     if (handle.ctx) |ctx| c.llama_free(ctx);

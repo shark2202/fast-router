@@ -11,6 +11,7 @@ package router
 
 import (
 	"errors"
+	"fmt"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -21,6 +22,8 @@ import (
 type zigBackend struct {
 	frLoad func(path *byte) unsafe.Pointer
 	frScore func(h unsafe.Pointer, prompt *byte, promptLen uintptr, codes **byte, nCands int32, out *float32) int32
+	frScoreYesno func(h unsafe.Pointer, prompt *byte, promptLen uintptr, yesTokenId int32, outLogit *float32) int32
+	frGetTokenId func(h unsafe.Pointer, word *byte, wordLen uintptr) int32
 	frFree  func(h unsafe.Pointer)
 	handle unsafe.Pointer
 }
@@ -38,6 +41,8 @@ func NewZigBackend(libPath, modelPath string) (*zigBackend, error) {
 	b := &zigBackend{}
 	purego.RegisterLibFunc(&b.frLoad, lib, "fr_load")
 	purego.RegisterLibFunc(&b.frScore, lib, "fr_score")
+	purego.RegisterLibFunc(&b.frScoreYesno, lib, "fr_score_yesno")
+	purego.RegisterLibFunc(&b.frGetTokenId, lib, "fr_get_token_id")
 	purego.RegisterLibFunc(&b.frFree, lib, "fr_free")
 	// fr_load takes a null-terminated C string.
 	cpath, err := cString(modelPath)
@@ -83,12 +88,41 @@ func (b *zigBackend) ChoiceScore(prompt string, codes []string) ([]float64, Usag
 	return scores, Usage{InputTokens: len(prompt), OutputTokens: 1}, nil
 }
 
+// GetTokenID: tokenize a single word, return its token id.
+func (b *zigBackend) GetTokenID(word string) (int32, error) {
+	cword, _ := cString(word)
+	defer cStringFree(cword)
+	id := b.frGetTokenId(b.handle, cword, uintptr(len(word)))
+	if id < 0 {
+		return 0, fmt.Errorf("'%s' is not a single token (code %d)", word, id)
+	}
+	return id, nil
+}
+
 // Close releases the model/context.
 func (b *zigBackend) Close() {
 	if b.handle != nil {
 		b.frFree(b.handle)
 		b.handle = nil
 	}
+}
+
+// ScoreYesNo: per-candidate yes/no evaluation (LLM2Jev method).
+// For each candidate, constructs a prompt asking 'is this about X? yes/no',
+// runs one forward, extracts the 'yes' token logit. Returns logits per candidate.
+func (b *zigBackend) ScoreYesNo(prompts []string, yesTokenID int32) ([]float64, Usage, error) {
+	out := make([]float64, len(prompts))
+	for i, p := range prompts {
+		cprompt, _ := cString(p)
+		var logit float32
+		ret := b.frScoreYesno(b.handle, cprompt, uintptr(len(p)), yesTokenID, &logit)
+		cStringFree(cprompt)
+		if ret != 0 {
+			return nil, Usage{}, frScoreError(ret)
+		}
+		out[i] = float64(logit)
+	}
+	return out, Usage{InputTokens: 0, OutputTokens: len(prompts)}, nil
 }
 
 // --- cgo-free C string helpers ---
