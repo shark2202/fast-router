@@ -1,0 +1,15 @@
+{
+  "listen": ":8080",
+  "model": {
+    "path": "",
+    "lib": "zig/libfrwrapper.dylib",
+    "lib_dir": ""
+  },
+  "upstreams": {
+    "openai": {
+      "base_url": "https://api.openai.com/v1",
+      "api_key": "sk-test",
+      "protocol": "openai"
+    }
+  }
+}

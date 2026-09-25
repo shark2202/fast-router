@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync"
 )
 
 // Upstream: a real LLM backend to forward to.
@@ -29,10 +30,18 @@ type Gateway struct {
 	registry  []ModelEntry
 	upstreams map[string]Upstream // by ModelEntry.Upstream
 	client    *http.Client
+	mu        sync.Mutex // guards upstreams (hot-reload via Admin)
 }
 
 func NewGateway(scorer *Scorer, registry []ModelEntry, upstreams map[string]Upstream) *Gateway {
 	return &Gateway{scorer: scorer, registry: registry, upstreams: upstreams, client: &http.Client{}}
+}
+
+// SetUpstreams hot-reloads the upstream map (called by Admin on config save).
+func (g *Gateway) SetUpstreams(upstreams map[string]Upstream) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.upstreams = upstreams
 }
 
 // ServeHTTP routes by path to the OpenAI or Anthropic handler.
@@ -105,6 +114,8 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 // Returns the chosen upstream + model_id. If model name is a strong hint
 // (e.g. "anthropic/claude-sonnet"), bypasses Jev (design共识 model名强hint).
 func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (Upstream, string, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
 	// C2: task-turn detection
 	kind, _ := DetectTurn(messages, protocol)
 	if kind != NewTaskTurn {

@@ -1,17 +1,19 @@
-// cmd/fast-router: start the smart router gateway.
+// cmd/fast-router: start the smart router gateway with config file.
 //
-// Loads the Jev scorer (zig+libllama), the seed model registry, and upstream
-// config (from env), then serves /v1/chat/completions + /v1/messages.
+// Loads config from --config (default ./fast-router.json or FR_CONFIG env),
+// initializes the Jev scorer (zig+libllama), the model registry, and upstreams.
+// Serves /v1/* (gateway) + /admin + /api/* (admin web UI for config).
 //
-// Env:
-//   FR_MODEL     GGUF model path (default: downloaded Qwen2.5-0.5B for POC)
-//   FR_LIB       libfrwrapper path (default: zig/libfrwrapper.dylib)
-//   FR_LIB_DIR   llama.cpp lib dir for DYLD_LIBRARY_PATH
-//   OPENAI_API_KEY / ANTHROPIC_API_KEY / DEEPSEEK_API_KEY
-//   FR_ADDR      listen addr (default :8080)
+// Usage:
+//   DYLD_LIBRARY_PATH=/tmp/llama-bins/llama-b11175 \
+//   ./fast-router --config ./fast-router.json
+//
+// On first run (no config file), writes a default template (no API keys —
+// fill them via http://localhost:8080/admin).
 package main
 
 import (
+	"flag"
 	"log"
 	"net/http"
 	"os"
@@ -20,36 +22,65 @@ import (
 )
 
 func main() {
-	modelPath := os.Getenv("FR_MODEL")
-	if modelPath == "" {
-		log.Fatal("FR_MODEL required (GGUF path, e.g. Qwen2.5-0.5B-Instruct-Q4_K_M.gguf)")
+	var cfgPath string
+	flag.StringVar(&cfgPath, "config", "", "config file path (default ./fast-router.json or FR_CONFIG env)")
+	flag.Parse()
+
+	if cfgPath == "" {
+		cfgPath = os.Getenv("FR_CONFIG")
 	}
-	libPath := os.Getenv("FR_LIB")
-	if libPath == "" {
-		libPath = "zig/libfrwrapper.dylib"
+	if cfgPath == "" {
+		cfgPath = "fast-router.json"
 	}
 
-	backend, err := router.NewZigBackend(libPath, modelPath)
+	// Load config (creates default template if file missing).
+	cfg, err := router.LoadConfig(cfgPath)
 	if err != nil {
-		log.Fatalf("backend: %v (DYLD_LIBRARY_PATH=%s set?)", err, os.Getenv("FR_LIB_DIR"))
+		log.Fatalf("load config %s: %v", cfgPath, err)
 	}
-	defer backend.Close()
-	scorer := router.NewScorer(backend, "jev-local")
-
-	upstreams := map[string]router.Upstream{
-		"openai":    {Name: "openai", BaseURL: "https://api.openai.com/v1", APIKey: os.Getenv("OPENAI_API_KEY"), Protocol: "openai"},
-		"anthropic": {Name: "anthropic", BaseURL: "https://api.anthropic.com", APIKey: os.Getenv("ANTHROPIC_API_KEY"), Protocol: "anthropic"},
-		"deepseek":  {Name: "deepseek", BaseURL: "https://api.deepseek.com/v1", APIKey: os.Getenv("DEEPSEEK_API_KEY"), Protocol: "openai"},
+	// If the file didn't exist, save the default template so the user can edit it.
+	if _, err := os.Stat(cfgPath); os.IsNotExist(err) {
+		if err := cfg.Save(cfgPath); err != nil {
+			log.Printf("warn: could not write default config template: %v", err)
+		} else {
+			log.Printf("wrote default config template to %s — edit it or use the admin UI", cfgPath)
+		}
 	}
 
-	gw := router.NewGateway(scorer, router.SeedRegistry, upstreams)
+	// Initialize the Jev scorer (zig+libllama) if model path is configured.
+	var gw *router.Gateway
+	if cfg.Model.Path != "" {
+		backend, err := router.NewZigBackend(cfg.Model.Lib, cfg.Model.Path)
+		if err != nil {
+			log.Fatalf("backend: %v (DYLD_LIBRARY_PATH / LD_LIBRARY_PATH set to %s?)", err, cfg.Model.LibDir)
+		}
+		defer backend.Close()
+		scorer := router.NewScorer(backend, "jev-local")
+		gw = router.NewGateway(scorer, router.SeedRegistry, cfg.ToUpstreams())
+		log.Printf("Jev scorer ready (model=%s)", cfg.Model.Path)
+	} else {
+		// No model configured — gateway runs in hint-only mode (model-name strong hint bypasses Jev).
+		gw = router.NewGateway(nil, router.SeedRegistry, cfg.ToUpstreams())
+		log.Printf("no model configured — running in hint-only mode (set model.path via admin UI to enable Jev)")
+	}
 
-	addr := os.Getenv("FR_ADDR")
+	admin := router.NewAdmin(cfg, cfgPath, gw)
+
+	// Mux: /v1/* → gateway, /admin + /api/* → admin, else → gateway (fallback).
+	mux := http.NewServeMux()
+	mux.Handle("/v1/", gw)
+	mux.Handle("/admin", admin)
+	mux.Handle("/admin/", admin)
+	mux.Handle("/api/", admin)
+	mux.Handle("/", gw) // /v1/chat/completions etc. also via gateway
+
+	addr := cfg.Listen
 	if addr == "" {
 		addr = ":8080"
 	}
-	log.Printf("fast-router on %s (Jev scorer ready, %d upstreams)", addr, len(upstreams))
-	if err := (&http.Server{Addr: addr, Handler: gw}).ListenAndServe(); err != nil {
+	log.Printf("fast-router on %s (config: %s, %d upstreams) — admin UI at http://localhost%s/admin",
+		addr, cfgPath, len(cfg.Upstreams), addr)
+	if err := (&http.Server{Addr: addr, Handler: mux}).ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}
 }
