@@ -281,3 +281,55 @@ Go 重写（生产化）
 - 下次选模型 → 优先 2B 端侧（MiniCPM5-2B），CPU 友好 ✅ 行为改变
 - 下次做 prompt → 用 apply_chat_template（不 hardcoded）✅ 行为改变（待 yesnobench 集成确认）
 - 下次评估 P1 → 不只看模型大小，prompt 设计 + template 适配同样关键 ✅ 认知改变
+
+---
+
+## v0.3 增量更新（2026-09-26 MiniCPM5-2B 结果）
+
+### 新增 DecisionRecord
+
+| 预测 | 事前 | 实测 | 结果 | Surprise |
+|---|---|---|---|---|
+| MiniCPM5-2B yes/no P1 | 0.6（媲美 4B） | 26.7% | 翻车 | 2B Llama 介于 0.5B(16.7%) 和 1.5B(47%) 之间——模型大小有效但收益递减 |
+
+### 完整 P1 趋势（所有模型 × 方法）
+
+| 模型 | 系列 | 大小 | 方法 | P1 | P2 |
+|---|---|---|---|---|---|
+| Qwen2.5-0.5B | Qwen2.5 | 0.5B | 单 token | 10% | 1.7s |
+| Qwen2.5-0.5B | Qwen2.5 | 0.5B | yes/no | 16.7% | 4.7s |
+| Qwen2.5-1.5B | Qwen2.5 | 1.5B | 单 token | 47% | 18s |
+| Qwen3-8B | Qwen3 | 8B | 单 token | 6.7% | 9.5s |
+| Ornith-1.5-9B | Qwen3.5+ | 9B | yes/no | 46.7% | 120s |
+| MiniCPM5-2B | Llama | 2B | yes/no | 26.7% | 12.3s |
+
+### 更新教训
+
+| ID | 教训 | 机理 | 对策 |
+|---|---|---|---|
+| L-008 | 模型大小收益递减 | 0.5B→2B→9B: 16.7%→26.7%→46.7%（+10pp/+20pp），都 <70%——**prompt 设计 + template 是共同瓶颈，不只模型大小** | 集成 apply_chat_template + 研究 LLM2Jev 精确 prompt |
+
+### 更新 candidate
+
+| ID | 状态 | 结果 |
+|---|---|---|
+| C-006 MiniCPM5-2B | candidate→已测 | P1=26.7%（2B Llama 介于 0.5B 和 1.5B 之间，CPU 友好 12.3s） |
+
+### 更新注册表
+
+| 字段 | v0.2 | v0.3 |
+|---|---|---|
+| 新固化数 | 12 patterns + 7 教训 | 12 patterns + 8 教训（+L-008 收益递减） |
+| Surprise Rate | 43% | 44%（7/16，MiniCPM5-2B 26.7% 翻车） |
+
+### 结论：P1 瓶颈诊断
+
+**所有模型 × 方法都 <70%**——共同瓶颈是：
+1. hardcoded Qwen2.5 chat template（不适配 Llama/Qwen3/Qwen3.5）
+2. 简单 "is this about X?" prompt（不利用模型推理能力）
+3. fr_apply_template 已实现但未集成到 yesnobench
+
+**下一步优先级**：
+1. 集成 apply_chat_template 到 yesnobench（替代 hardcoded）
+2. 研究 LLM2Jev 精确 prompt 格式（clone 源码）
+3. 用 apply_template + 优化 prompt 重跑所有模型
