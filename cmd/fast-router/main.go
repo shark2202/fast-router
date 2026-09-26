@@ -61,7 +61,8 @@ func main() {
 		}
 		defer backend.Close()
 		scorer := router.NewScorer(backend, "jev-local")
-		gw = router.NewGateway(scorer, registry, cfg.ToUpstreams())
+		engine := router.NewNativeSystemOneEngine(scorer)
+		gw = router.NewGateway(engine, registry, cfg.ToUpstreams())
 		log.Printf("Jev scorer ready (model=%s)", cfg.Model.Path)
 	} else {
 		// No model configured — gateway runs in hint-only mode (model-name strong hint bypasses Jev).

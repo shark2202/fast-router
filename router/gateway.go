@@ -10,6 +10,7 @@ package router
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -31,7 +32,7 @@ type Upstream struct {
 
 // Gateway: HTTP server tying the route chain to upstream forwarding.
 type Gateway struct {
-	scorer    *Scorer
+	engine    SystemOneEngine
 	registry  []ModelEntry
 	upstreams map[string]Upstream // by ModelEntry.Upstream
 	client    *http.Client
@@ -49,8 +50,8 @@ type cachedRoute struct {
 	protocol string
 }
 
-func NewGateway(scorer *Scorer, registry []ModelEntry, upstreams map[string]Upstream) *Gateway {
-	return &Gateway{scorer: scorer, registry: registry, upstreams: upstreams, client: &http.Client{}}
+func NewGateway(engine SystemOneEngine, registry []ModelEntry, upstreams map[string]Upstream) *Gateway {
+	return &Gateway{engine: engine, registry: registry, upstreams: upstreams, client: &http.Client{}}
 }
 
 // SetUpstreams hot-reloads the upstream map (called by Admin on config save).
@@ -95,7 +96,7 @@ func (g *Gateway) handleOpenAI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json: "+err.Error(), 400)
 		return
 	}
-	up, modelID, err := g.route(req.Messages, req.Model, "openai")
+	up, modelID, err := g.route(r.Context(), req.Messages, req.Model, "openai")
 	if err != nil {
 		http.Error(w, "route: "+err.Error(), 500)
 		return
@@ -119,7 +120,7 @@ func (g *Gateway) handleAnthropic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json: "+err.Error(), 400)
 		return
 	}
-	up, modelID, err := g.route(req.Messages, req.Model, "anthropic")
+	up, modelID, err := g.route(r.Context(), req.Messages, req.Model, "anthropic")
 	if err != nil {
 		http.Error(w, "route: "+err.Error(), 500)
 		return
@@ -136,7 +137,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 // route: C2 task-turn → (new turn?) → C3 Jev → C4 Match → C5 Select.
 // Returns the chosen upstream + model_id. If model name is a strong hint
 // (e.g. "anthropic/claude-sonnet"), bypasses Jev (design共识 model名强hint).
-func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (Upstream, string, error) {
+func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHint, protocol string) (Upstream, string, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	// C2: task-turn detection
@@ -169,7 +170,7 @@ func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (
 	}
 
 	// hint-only mode (no scorer configured): skip Jev, use default upstream + client model.
-	if g.scorer == nil {
+	if g.engine == nil {
 		return g.defaultUpstream(), modelHint, nil
 	}
 
@@ -184,7 +185,7 @@ func (g *Gateway) route(messages []map[string]any, modelHint, protocol string) (
 	for _, t := range SeedTaskTypes {
 		criteria[t.Code] = t.Description
 	}
-	resp, err := g.scorer.Score(System1Request{
+	resp, err := g.engine.Evaluate(ctx, System1Request{
 		State: state,
 		Questions: map[string]Question{
 			"task_type": {Type: "choice", Instructions: "pick the task type", Criteria: criteria},

@@ -21,6 +21,7 @@ timestamp: 2026-09-25T00:00:00+08:00
 |---|---|---|---|
 | C2 任务轮判定 | `router/turn_detector.go` | 测试通过 | OpenAI/Anthropic 结构测试覆盖；ambiguous 仍是显式状态 |
 | C3 Choice scorer | `router/scorer.go` | 纯 Go 逻辑测试通过 | Backend 可插拔；测试使用 mock，不等于真实模型准确率 |
+| System One Engine seam | `router/systemone_engine.go`, `router/systemone_http.go` | 单元测试通过 | native adapter 和 HTTP client 已可替换；真实 jev-rs/Laya/llm2jev sidecar 尚未端到端验收 |
 | C3 Zig/libllama Backend | `router/zig_backend.go`, `zig/frwrapper.zig` | 代码存在，待实测 | 依赖动态库、llama.cpp、GGUF、ABI 和目标平台 |
 | C4 能力挡死 | `router/matcher.go` | 测试通过 | 基于 seed capability vector；数据仍是 POC/声明值 |
 | C5 加权选模 | `router/selector.go` | 测试通过 | measured 为空时冷启动按成本；真实质量回流未闭合 |
