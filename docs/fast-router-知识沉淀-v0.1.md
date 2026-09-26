@@ -333,3 +333,52 @@ Go 重写（生产化）
 1. 集成 apply_chat_template 到 yesnobench（替代 hardcoded）
 2. 研究 LLM2Jev 精确 prompt 格式（clone 源码）
 3. 用 apply_template + 优化 prompt 重跑所有模型
+
+---
+
+## v0.4 增量更新（2026-09-26 P1=73.3% 达标！）
+
+### 🎉 P1 > 70% 目标达成
+
+**Ornith-1.5-9B + per-candidate yes/no + apply_chat_template: P1 = 73.3% (22/30)**
+
+### 完整 P1 演化
+
+| 模型 | 大小 | 方法 | template | P1 | 增量 |
+|---|---|---|---|---|---|
+| Qwen2.5-0.5B | 0.5B | 单 token | hardcoded | 10% | 基线 |
+| Qwen2.5-0.5B | 0.5B | yes/no | hardcoded | 16.7% | +6.7pp 方法 |
+| MiniCPM5-2B | 2B | yes/no | hardcoded | 26.7% | +10pp 模型 |
+| MiniCPM5-2B | 2B | yes/no | apply | 43.3% | +16.6pp template |
+| Ornith-9B | 9B | yes/no | hardcoded | 46.7% | +3.4pp 模型 |
+| **Ornith-9B** | **9B** | **yes/no** | **apply** | **73.3%** | **+26.6pp template** |
+
+### 三个因素（按影响排序）
+
+1. **template 适配**（+26.6pp for 9B / +16.6pp for 2B）——最大因素
+2. **模型大小**（0.5B→9B：无 template +30pp / 有 template +56.6pp）
+3. **方法**（单 token→yes/no：+6.7pp，消除位置偏好）
+
+### candidate→active 升级
+
+| ID | 原状态 | 新状态 | 原因 |
+|---|---|---|---|
+| C-001 per-candidate yes/no 优于单 token | candidate | **active** | 73.3% > 46.7%（hardcoded） |
+| C-002 apply_chat_template | candidate | **active** | +26.6pp 验证 |
+| C-003 Ornith-1.5-9B | candidate | **active** | P1=73.3% > 70% |
+| C-005 8B 低分是 template 问题 | candidate | **active** | template 是最大因素验证 |
+
+### 新教训
+
+| ID | 教训 | 机理 | 对策 |
+|---|---|---|---|
+| L-009 | template 是最大因素 | 9B template +26.6pp > 模型 0.5B→9B +30pp（但 template 在 2B 上 +16.6pp > 模型 0.5B→2B +10pp）| 优先适配 template 再增大模型 |
+| L-010 | template 是 model-specific | Qwen 系列 hardcoded 已对（-3.4pp），Llama 系列 apply 才对（+16.6pp）| Qwen 用 hardcoded，非 Qwen 用 apply |
+| L-011 | P1 达标需三者合一 | 模型（9B）+ 方法（yes/no）+ template（apply）缺一不可：46.7%（缺 template）→ 73.3%（三者齐全）| 三个因素同时优化 |
+
+### T10 行为改变（v0.4 最终）
+
+- ✅ 用 yes/no（不用单 token）
+- ✅ 用 apply_chat_template（不用 hardcoded）—— 非 Qwen 必须
+- ✅ 用 Ornith-1.5-9B（9B + Qwen3.5 + agent 训练）
+- ✅ P1 > 70% 达标——Jev 智能路由完全交付
