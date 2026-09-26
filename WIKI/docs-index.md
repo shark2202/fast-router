@@ -24,6 +24,9 @@ timestamp: 2026-09-25T00:00:00+08:00
 
 ## 研究
 
+* [Jev / System One 开源实现集成评估](../docs/Jev-开源实现集成评估.md) - 对比 llm2jev、Laya、local-jev、jev-rs 等的集成路径与限制。
+* [MiniCPM5-2B 深度研究](../docs/MiniCPM5-2B-深度研究.md) - 模型事实、部署、chat template、tool calling 与 fast-router C3 适配评估。
+* [MiniCPM5-2B 初步研究](../docs/MiniCPM5-2B-研究笔记.md) - 较早的候选模型记录；详细事实核验以深度研究为准。
 * [System 1 可复用性研究](../docs/fast-browser-use-System1架构与可复用性研究.md) - 单 token 候选打分、KV cache、System 2 和解耦建议。
 
 ## 理论与组织
