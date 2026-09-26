@@ -26,6 +26,7 @@ models/
 
 # OS files
 .DS_Store
+.worktrees/
 
 # config files (contain API keys — do not commit)
 fast-router.json
