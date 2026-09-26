@@ -30,12 +30,24 @@ func main() {
 	}
 	defer backend.Close()
 
+	// Use as ExtendedBackend (zigBackend implements it)
+	var extBackend router.ExtendedBackend = backend
+
 	// Get "yes" token id
 	yesID, err := backend.GetTokenID("yes")
 	if err != nil {
 		log.Fatalf("get 'yes' token id: %v", err)
 	}
 	fmt.Fprintf(os.Stderr, "'yes' token id: %d\n", yesID)
+
+	// Check if backend supports apply_chat_template
+	var hasTemplate bool
+	if extBackend != nil {
+		hasTemplate = true
+		fmt.Fprintf(os.Stderr, "apply_chat_template: available (auto-adapt)\n")
+	} else {
+		fmt.Fprintf(os.Stderr, "apply_chat_template: not available (hardcoded template)\n")
+	}
 
 	// Load samples
 	raw, _ := os.ReadFile("data/task_type_samples.json")
@@ -61,9 +73,24 @@ func main() {
 		// Build 10 yes/no prompts (one per candidate)
 		prompts := make([]string, len(candidates))
 		for i, c := range candidates {
-			prompts[i] = fmt.Sprintf(
-				"<|im_start|>user\n%s\nQuestion: Is this request about \"%s\" (%s)? Answer yes or no.\n<|im_end|>\n<|im_start|>assistant\n",
-				s.Message, c.name, c.desc)
+			var prompt string
+			if hasTemplate {
+				// Use llama_chat_apply_template (auto-adapt model's template)
+				msgs := fmt.Sprintf(`[{"role":"user","content":%q}]`,
+					fmt.Sprintf("%s\n\nQuestion: Does this request belong to the \"%s\" category? %s\nAnswer with only \"yes\" or \"no\".",
+						s.Message, c.name, c.desc))
+				prompt, err = extBackend.ApplyChatTemplate(msgs, true)
+				if err != nil {
+					log.Printf("template failed %q: %v", s.Message, err)
+					continue
+				}
+			} else {
+				// Fallback: hardcoded Qwen2.5 template
+				prompt = fmt.Sprintf(
+					"<|im_start|>user\n%s\nQuestion: Is this request about \"%s\" (%s)? Answer yes or no.\n<|im_end|>\n<|im_start|>assistant\n",
+					s.Message, c.name, c.desc)
+			}
+			prompts[i] = prompt
 		}
 
 		// Score each candidate (N forwards)
