@@ -231,3 +231,53 @@ Go 重写（生产化）
 - 代码：router/（20 Go 文件）+ zig/（frwrapper.zig + build.zig + 7 头文件）+ cmd/（3 入口）+ scripts/pack.sh
 - 测试：39 测试（router 31 + schema 8，不含 session/tool 8 = 39 含）
 - 实测：0.5B/1.5B/8B P1/P2 + 端到端（pong/tool_use/SSE/schema/session）
+
+---
+
+## v0.2 增量更新（2026-09-26）
+
+### 新增 DecisionRecord 校准
+
+| 预测 | 事前 | 实测 | 结果 | Surprise |
+|---|---|---|---|---|
+| P1 yes/no 0.5B > 单 token | 0.8 | 16.7% vs 10% (+6.7pp) | 命中 | 位置偏好确实存在且 yes/no 消除 |
+| P1 Ornith-9B yes/no >70% | 0.8 | 46.7% | 翻车 | 9B 也不达 70%——prompt 设计 + template 适配是瓶颈，不只模型大小 |
+| MiniCPM5-2B P1 | — | 待测 | — | 2B Llama 端侧候选，1.56GB 快下快跑 |
+
+### 新增 patterns
+
+| ID | pattern | 内容 |
+|---|---|---|
+| P-011 | 双模型策略 | CPU 场景用 2B（MiniCPM5-2B 1.56GB ~12s/sample），GPU/MLX 用 9B（Ornith 5.4GB） |
+| P-012 | per-candidate yes/no 引擎三件套 | fr_score_yesno + fr_apply_template + fr_get_token_id，不依赖单 token 映射，自动适配任意模型 chat template |
+
+### 新增教训
+
+| ID | 教训 | 机理 | 对策 |
+|---|---|---|---|
+| L-006 | 9B 也不一定 >70% | Ornith-9B（媲美 4B）yes/no P1=46.7%——模型大小不是唯一因素，prompt 设计 + template 适配是瓶颈 | 优化 prompt + 用 apply_chat_template |
+| L-007 | yes/no +6.7pp 但不解决根本 | 0.5B 10%→16.7% 确认位置偏好，但 P1 仍低——prompt 设计和 template 比方法选择更重要 | 研究 LLM2Jev 精确 prompt + 集成 apply_chat_template |
+
+### 新增/更新 candidate
+
+| ID | 经验 | 状态 | 解除条件 |
+|---|---|---|---|
+| C-006 | MiniCPM5-2B P1（2B Llama 端侧） | candidate | 下载完成 + yesnobench |
+| C-007 | apply_chat_template 集成到 yesnobench | candidate | 改 yesnobench 用 fr_apply_template 替代 hardcoded |
+| C-005 更新 | 8B Qwen3 6.7% 是跨系列 + thinking 问题 | candidate→部分验证 | Ornith yes/no 46.7%（miss 分散）确认位置偏好消除，但 P1 仍低——template + prompt 是下一步 |
+
+### 更新注册表
+
+| 字段 | v0.1 | v0.2 |
+|---|---|---|
+| 耗时 | ~1 天 | ~1.5 天（加 Ornith 9B + MiniCPM5-2B 研究 + yes/no 集成） |
+| 缓存复用构件数 | 5 | 7（加 fr_score_yesno + fr_apply_template） |
+| 新固化数 | 10 patterns + 5 教训 | 12 patterns + 7 教训 |
+| Surprise Rate | 42%（5/12） | 43%（6/14）——Ornith 9B P1=46.7% 翻车 |
+
+### T10 行为改变验证（v0.2）
+
+- 下次做 Jev 打分 → 用 per-candidate yes/no（不用单 token）✅ 行为改变
+- 下次选模型 → 优先 2B 端侧（MiniCPM5-2B），CPU 友好 ✅ 行为改变
+- 下次做 prompt → 用 apply_chat_template（不 hardcoded）✅ 行为改变（待 yesnobench 集成确认）
+- 下次评估 P1 → 不只看模型大小，prompt 设计 + template 适配同样关键 ✅ 认知改变
