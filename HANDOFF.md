@@ -1,6 +1,6 @@
 # HANDOFF — fast-router v1.0
 
-> **Next session focus**: 9B P1 revalidation with clean template (0.5B already +6.6pp) + C7-C9 verdict feedback loop + Windows on-device test + codex/claude code real agent integration. (R5 async first-score + route cache landed 2026-09-27 — effective P2 < 1s; batch KV-reuse landed same day — raw score 77s → ~20s est @9B; template-mangling bug fixed — all historical P1 numbers were measured on mangled prompts.)
+> **Next session focus**: 9B P1 revalidation with clean template (model downloading to /tmp/fr-model/ornith9b.gguf — run `yesnobench` when complete) + C8 LLM-scout/manual review on top of /api/measured + Windows on-device test + codex/claude code real agent integration. (R5 async + batch KV-reuse + template fix + C7 verdict loop all landed 2026-09-27.)
 
 ---
 
