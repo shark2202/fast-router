@@ -1,5 +1,6 @@
 {
   "listen": ":8080",
+  "async_score": true,
   "model": {
     "path": "",
     "lib": "zig/libfrwrapper.dylib",

@@ -12,11 +12,16 @@ import (
 
 // Config is the persistent gateway configuration.
 type Config struct {
-	Listen    string                  `json:"listen"`     // ":8080"
-	Model     ModelConfig             `json:"model"`      // GGUF model + lib paths
-	Upstreams map[string]UpstreamCfg  `json:"upstreams"`  // name -> upstream config
-	Registry  []ModelEntry            `json:"registry"`   // model registry (empty → SeedRegistry)
+	Listen     string                 `json:"listen"`      // ":8080"
+	AsyncScore *bool                  `json:"async_score"` // R5: absent → true (async first-score + cache); false restores blocking Jev
+	Model      ModelConfig            `json:"model"`       // GGUF model + lib paths
+	Upstreams  map[string]UpstreamCfg `json:"upstreams"`   // name -> upstream config
+	Registry   []ModelEntry           `json:"registry"`    // model registry (empty → SeedRegistry)
 }
+
+// AsyncScoreEnabled reports whether R5 async first-score routing is on.
+// Defaults to true when the config field is absent.
+func (c *Config) AsyncScoreEnabled() bool { return c.AsyncScore == nil || *c.AsyncScore }
 
 // ModelConfig: paths to the Jev scorer model + zig wrapper + llama.cpp libs.
 type ModelConfig struct {

@@ -69,6 +69,7 @@ func main() {
 		gw = router.NewGateway(nil, registry, cfg.ToUpstreams())
 		log.Printf("no model configured — running in hint-only mode (set model.path via admin UI to enable Jev)")
 	}
+	gw.SetAsyncScore(cfg.AsyncScoreEnabled())
 
 	admin := router.NewAdmin(cfg, cfgPath, gw)
 

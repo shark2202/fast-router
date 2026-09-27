@@ -13,11 +13,13 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"time"
 
 	"fast-router/router/schema"
 )
@@ -42,6 +44,14 @@ type Gateway struct {
 	// continuations (TurnKind != NewTaskTurn) inherit the prior route.
 	sessions   map[string]cachedRoute
 	sessionsMu sync.Mutex
+
+	// R5 async first-score: on a new task turn, serve the hint fallback
+	// immediately and score in the background (single-flight per session key),
+	// backfilling the session cache for subsequent turns. Effective P2 ≈ hint
+	// path (<1s) instead of the synchronous 77s CPU first score.
+	asyncScore bool
+	scoring    map[string]struct{} // in-flight background scores, by session key
+	scoringMu  sync.Mutex
 }
 
 type cachedRoute struct {
@@ -51,8 +61,11 @@ type cachedRoute struct {
 }
 
 func NewGateway(engine SystemOneEngine, registry []ModelEntry, upstreams map[string]Upstream) *Gateway {
-	return &Gateway{engine: engine, registry: registry, upstreams: upstreams, client: &http.Client{}}
+	return &Gateway{engine: engine, registry: registry, upstreams: upstreams, client: &http.Client{}, scoring: make(map[string]struct{})}
 }
+
+// SetAsyncScore toggles R5 async first-score routing (sync blocking when false).
+func (g *Gateway) SetAsyncScore(enabled bool) { g.asyncScore = enabled }
 
 // SetUpstreams hot-reloads the upstream map (called by Admin on config save).
 func (g *Gateway) SetUpstreams(upstreams map[string]Upstream) {
@@ -174,48 +187,118 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		return g.defaultUpstream(), modelHint, nil
 	}
 
+	// R5 async first-score: serve the hint fallback immediately, score in the
+	// background (single-flight per session), backfill the session cache.
+	if g.asyncScore {
+		state := lastUserText(messages, protocol)
+		if state == "" {
+			state = modelHint
+		}
+		g.spawnScore(sessionKey, state, protocol)
+		return g.defaultUpstream(), modelHint, nil
+	}
+
 	// extract state from last user message
 	state := lastUserText(messages, protocol)
 	if state == "" {
 		state = modelHint
 	}
 
+	upName, modelID, err := scoreRoute(ctx, g.engine, state, g.registry)
+	if err != nil {
+		return Upstream{}, "", err
+	}
+	up, ok := g.upstreams[upName]
+	if !ok {
+		return Upstream{}, "", fmt.Errorf("no upstream configured for %s", upName)
+	}
+	// cache route for this session (tool-loop continuations inherit it)
+	g.cacheRoute(sessionKey, upName, modelID, protocol)
+	return up, modelID, nil
+}
+
+// scoreRoute: C3 evaluate + C4 match + C5 select. Reads no Gateway state —
+// safe to call from the request path (under g.mu) or a background goroutine
+// (with snapshots).
+func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry) (upstream, modelID string, err error) {
 	// C3: Jev Choice over task types
 	criteria := map[string]string{}
 	for _, t := range SeedTaskTypes {
 		criteria[t.Code] = t.Description
 	}
-	resp, err := g.engine.Evaluate(ctx, System1Request{
+	resp, err := engine.Evaluate(ctx, System1Request{
 		State: state,
 		Questions: map[string]Question{
 			"task_type": {Type: "choice", Instructions: "pick the task type", Criteria: criteria},
 		},
 	})
 	if err != nil {
-		return Upstream{}, "", fmt.Errorf("jev score: %w", err)
+		return "", "", fmt.Errorf("jev score: %w", err)
 	}
 	taskCode := resp.Answers["task_type"].Choice
 	log.Printf("[route] jev chose task_type=%s (%s) confidence=%.3f", taskCode, ByCode[taskCode].Name, resp.Answers["task_type"].Confidence)
 
 	// C4 + C5: match + select
-	surv := Match(taskCode, g.registry)
+	surv := Match(taskCode, registry)
 	chosen, err := Select(surv, taskCode, nil)
 	if err != nil {
-		return Upstream{}, "", fmt.Errorf("select: %w", err)
+		return "", "", fmt.Errorf("select: %w", err)
 	}
-	log.Printf("[route] C4 blocked %d/%d, C5 selected %s (upstream=%s)", len(g.registry)-len(surv), len(g.registry), chosen.ModelID, chosen.Upstream)
-	up, ok := g.upstreams[chosen.Upstream]
-	if !ok {
-		return Upstream{}, "", fmt.Errorf("no upstream configured for %s", chosen.Upstream)
-	}
-	// cache route for this session (tool-loop continuations inherit it)
+	log.Printf("[route] C4 blocked %d/%d, C5 selected %s (upstream=%s)", len(registry)-len(surv), len(registry), chosen.ModelID, chosen.Upstream)
+	return chosen.Upstream, chosen.ModelID, nil
+}
+
+// cacheRoute stores a scored route for the session (tool-loop inheritance).
+func (g *Gateway) cacheRoute(sessionKey, upstream, modelID, protocol string) {
 	g.sessionsMu.Lock()
 	if g.sessions == nil {
 		g.sessions = make(map[string]cachedRoute)
 	}
-	g.sessions[sessionKey] = cachedRoute{upstream: chosen.Upstream, modelID: chosen.ModelID, protocol: protocol}
+	g.sessions[sessionKey] = cachedRoute{upstream: upstream, modelID: modelID, protocol: protocol}
 	g.sessionsMu.Unlock()
-	return up, chosen.ModelID, nil
+}
+
+// spawnScore launches a single-flight background score for the session.
+// Caller must hold g.mu (route does); snapshots registry/upstreams so the
+// goroutine never touches shared mutable state.
+func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
+	g.scoringMu.Lock()
+	if _, busy := g.scoring[sessionKey]; busy {
+		g.scoringMu.Unlock()
+		return
+	}
+	g.scoring[sessionKey] = struct{}{}
+	g.scoringMu.Unlock()
+
+	engine := g.engine
+	registry := make([]ModelEntry, len(g.registry))
+	copy(registry, g.registry)
+	upstreams := make(map[string]Upstream, len(g.upstreams))
+	for k, v := range g.upstreams {
+		upstreams[k] = v
+	}
+
+	go func() {
+		defer func() {
+			g.scoringMu.Lock()
+			delete(g.scoring, sessionKey)
+			g.scoringMu.Unlock()
+		}()
+		// background ctx: must outlive the request that spawned it (77s+ CPU score)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+		defer cancel()
+		upName, modelID, err := scoreRoute(ctx, engine, state, registry)
+		if err != nil {
+			log.Printf("[route-async] background score failed: %v", err)
+			return
+		}
+		if _, ok := upstreams[upName]; !ok {
+			log.Printf("[route-async] selected upstream %q not configured", upName)
+			return
+		}
+		g.cacheRoute(sessionKey, upName, modelID, protocol)
+		log.Printf("[route-async] backfilled session route: %s (upstream=%s)", modelID, upName)
+	}()
 }
 
 // defaultUpstream returns the first configured upstream (hint-only fallback).
@@ -227,28 +310,26 @@ func (g *Gateway) defaultUpstream() Upstream {
 }
 
 // sessionKey: derive a session key from the message history.
-// Messages up to (but not including) the last user message form the session
-// identity — tool-loop continuations share the same key.
+// sessionKey identifies the task thread that owns this conversation: a hash
+// of the FIRST user message. It is stable across a growing tool loop (turn N
+// appends messages but the first user message stays), so a route scored on
+// turn 1 is inherited by every continuation. Task switches are gated by
+// DetectTurn: NewTaskTurn re-scores and overwrites the same bucket.
+// (Replaces the delivered-v1.0 scheme that hashed the growing message prefix
+// — keys never matched across tool-loop turns, so the cache never hit.)
 // TODO: also accept X-Session-Id header for explicit session control.
 func sessionKey(messages []map[string]any) string {
-	if len(messages) <= 1 {
-		return "single"
-	}
-	// hash all messages except the last (the last changes per turn)
-	h := uint64(0)
-	for i := 0; i < len(messages)-1; i++ {
-		m := messages[i]
-		role, _ := m["role"].(string)
-		h = h*31 + uint64(len(role))
-		// include content hash (simplified: length + first chars)
-		if content, ok := m["content"].(string); ok {
-			h = h*31 + uint64(len(content))
-			if len(content) > 0 {
-				h = h*31 + uint64(content[0])
-			}
+	for _, m := range messages {
+		if role, _ := m["role"].(string); role == "user" {
+			content, _ := m["content"].(string)
+			sum := fnv.New64a()
+			sum.Write([]byte(role))
+			sum.Write([]byte{0})
+			sum.Write([]byte(content))
+			return fmt.Sprintf("s%x", sum.Sum64())
 		}
 	}
-	return fmt.Sprintf("s%x", h)
+	return "single"
 }
 func strongHint(model string) (string, bool) {
 	for _, sep := range []string{"/", ":"} {

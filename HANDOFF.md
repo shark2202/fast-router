@@ -1,6 +1,6 @@
 # HANDOFF — fast-router v1.0
 
-> **Next session focus**: P2 optimization (prefix reuse to reduce forward count) + C7-C9 verdict feedback loop + Windows on-device test + codex/claude code real agent integration.
+> **Next session focus**: P2 backend amortization (prefix/KV reuse inside frwrapper to cut the 77s first score) + C7-C9 verdict feedback loop + Windows on-device test + codex/claude code real agent integration. (R5 async first-score + route cache landed 2026-09-27 — effective P2 < 1s; remaining P2 work is cutting the raw score cost.)
 
 ---
 
@@ -13,7 +13,8 @@ A local-first LLM smart router gateway. Clients (codex/claude code/pi-agent) sen
 ## Current state (v1.0 delivered)
 
 - **P1 = 73.3%** (target >70%) — Ornith-1.5-9B + per-candidate yes/no + apply_chat_template
-- **P2 = 77s** (target <1s) — 9B CPU, needs GPU/MLX (hardware constraint, not code)
+- **P2 = 77s raw first score** (9B CPU, hardware-bound) — **R5 async first-score + route cache landed: effective P2 < 1s** (first turn forwards on hint, background score backfills session cache, continuations inherit)
+- session key now stable across tool loops (fixed v1.0 bug: growing-prefix hash never hit the cache in real agent flows)
 - **hint-only mode**: fully usable (P2<1s, verified end-to-end with real LLM "pong")
 - **Jev smart routing**: P1 achieved, P2 needs hardware acceleration
 - 29 commits, 39 tests, 6 platforms (darwin/linux/windows × amd64/arm64)
@@ -25,6 +26,7 @@ A local-first LLM smart router gateway. Clients (codex/claude code/pi-agent) sen
 | Delivery report | `docs/fast-router-交付报告-v1.0.md` |
 | Knowledge sedimentation (v0.1+v0.2+v0.3+v0.4+v0.5) | `docs/fast-router-知识沉淀-v0.1.md` |
 | Tech-stack evaluation (zig+go+cpp) | `docs/fast-router-技术栈评估-zig-go-cpp.md` |
+| Engine evaluation (native/jev-rs/laya.cpp/lev) | `docs/fast-router-引擎评估-2026-09-27.md` |
 | Build/pack/distribute SOP | `SOP/build.md` |
 | Design consensus (grilling Q1-Q10) | `docs/fast-router-智能路由设计共识-v0.1.md` |
 | Architecture design v0.2 | `docs/fast-router-架构设计-v0.2.md` |
