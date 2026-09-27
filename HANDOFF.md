@@ -1,6 +1,6 @@
 # HANDOFF — fast-router v1.0
 
-> **Next session focus**: P2 backend amortization (prefix/KV reuse inside frwrapper to cut the 77s first score) + C7-C9 verdict feedback loop + Windows on-device test + codex/claude code real agent integration. (R5 async first-score + route cache landed 2026-09-27 — effective P2 < 1s; remaining P2 work is cutting the raw score cost.)
+> **Next session focus**: 9B P1 revalidation with clean template (0.5B already +6.6pp) + C7-C9 verdict feedback loop + Windows on-device test + codex/claude code real agent integration. (R5 async first-score + route cache landed 2026-09-27 — effective P2 < 1s; batch KV-reuse landed same day — raw score 77s → ~20s est @9B; template-mangling bug fixed — all historical P1 numbers were measured on mangled prompts.)
 
 ---
 
@@ -12,9 +12,10 @@ A local-first LLM smart router gateway. Clients (codex/claude code/pi-agent) sen
 
 ## Current state (v1.0 delivered)
 
-- **P1 = 73.3%** (target >70%) — Ornith-1.5-9B + per-candidate yes/no + apply_chat_template
-- **P2 = 77s raw first score** (9B CPU, hardware-bound) — **R5 async first-score + route cache landed: effective P2 < 1s** (first turn forwards on hint, background score backfills session cache, continuations inherit)
+- **P1 = 73.3%** (target >70%) — Ornith-1.5-9B + per-candidate yes/no + apply_chat_template — **measured on mangled prompts (v1.0 template bug): needs revalidation; 0.5B recheck 16.7%→23.3% (+6.6pp) suggests 9B ≥ 73.3%**
+- **P2 = 77s raw first score → ~20s est** (batch KV-reuse: 2.1-3.9x measured on 0.5B) — **R5 async: effective P2 < 1s** (first turn forwards on hint, background score backfills session cache, continuations inherit)
 - session key now stable across tool loops (fixed v1.0 bug: growing-prefix hash never hit the cache in real agent flows)
+- zigBackend serialized with mutex (llama_context not thread-safe — required by R5 concurrent background scores)
 - **hint-only mode**: fully usable (P2<1s, verified end-to-end with real LLM "pong")
 - **Jev smart routing**: P1 achieved, P2 needs hardware acceleration
 - 29 commits, 39 tests, 6 platforms (darwin/linux/windows × amd64/arm64)
