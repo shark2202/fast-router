@@ -52,12 +52,32 @@ type Gateway struct {
 	asyncScore bool
 	scoring    map[string]struct{} // in-flight background scores, by session key
 	scoringMu  sync.Mutex
+
+	// C7 verdict feedback: routing outcomes (nil = not configured, no-op)
+	verdicts *VerdictStore
+}
+
+// SetVerdicts attaches the C7 verdict store (nil-safe when never called).
+func (g *Gateway) SetVerdicts(s *VerdictStore) { g.verdicts = s }
+
+// Verdicts exposes the C7 store for the admin API.
+func (g *Gateway) Verdicts() *VerdictStore { return g.verdicts }
+
+// routeDecision: what route() decided, with the metadata C7 needs.
+type routeDecision struct {
+	Upstream  Upstream
+	ModelID   string
+	Session   string
+	TaskTurn  string // "new" | "continue"
+	TaskCode  string // A-J for jev routes (inherited on continuation)
+	Via       string // "jev" | "hint" | "inherit" | "strong-hint"
 }
 
 type cachedRoute struct {
-	upstream  string
+	upstream string
 	modelID  string
 	protocol string
+	taskCode string
 }
 
 func NewGateway(engine SystemOneEngine, registry []ModelEntry, upstreams map[string]Upstream) *Gateway {
@@ -109,14 +129,14 @@ func (g *Gateway) handleOpenAI(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json: "+err.Error(), 400)
 		return
 	}
-	up, modelID, err := g.route(r.Context(), req.Messages, req.Model, "openai")
+	dec, err := g.route(r.Context(), req.Messages, req.Model, "openai")
 	if err != nil {
 		http.Error(w, "route: "+err.Error(), 500)
 		return
 	}
 	// rewrite model field to the chosen upstream model, forward.
-	rewritten := g.rewriteOpenAIModel(body, modelID)
-	g.forward(w, r, up, "/v1/chat/completions", rewritten, "openai")
+	rewritten := g.rewriteOpenAIModel(body, dec.ModelID)
+	g.forward(w, r, dec, "/v1/chat/completions", rewritten, "openai")
 }
 
 // anthropicRequest: minimal fields for routing.
@@ -133,13 +153,13 @@ func (g *Gateway) handleAnthropic(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json: "+err.Error(), 400)
 		return
 	}
-	up, modelID, err := g.route(r.Context(), req.Messages, req.Model, "anthropic")
+	dec, err := g.route(r.Context(), req.Messages, req.Model, "anthropic")
 	if err != nil {
 		http.Error(w, "route: "+err.Error(), 500)
 		return
 	}
-	rewritten := g.rewriteAnthropicModel(body, modelID)
-	g.forward(w, r, up, "/v1/messages", rewritten, "anthropic")
+	rewritten := g.rewriteAnthropicModel(body, dec.ModelID)
+	g.forward(w, r, dec, "/v1/messages", rewritten, "anthropic")
 }
 
 func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
@@ -150,7 +170,7 @@ func (g *Gateway) handleModels(w http.ResponseWriter, r *http.Request) {
 // route: C2 task-turn → (new turn?) → C3 Jev → C4 Match → C5 Select.
 // Returns the chosen upstream + model_id. If model name is a strong hint
 // (e.g. "anthropic/claude-sonnet"), bypasses Jev (design共识 model名强hint).
-func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHint, protocol string) (Upstream, string, error) {
+func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHint, protocol string) (routeDecision, error) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	// C2: task-turn detection
@@ -158,6 +178,10 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 
 	// session key: hash of message history (or X-Session-Id header — TODO)
 	sessionKey := sessionKey(messages)
+	taskTurn := "new"
+	if kind != NewTaskTurn {
+		taskTurn = "continue"
+	}
 
 	// if not a new task turn (tool-loop or ambiguous), inherit prior route
 	if kind != NewTaskTurn {
@@ -165,7 +189,8 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		if cached, ok := g.sessions[sessionKey]; ok {
 			up := g.upstreams[cached.upstream]
 			g.sessionsMu.Unlock()
-			return up, cached.modelID, nil
+			return routeDecision{Upstream: up, ModelID: cached.modelID, Session: sessionKey,
+				TaskTurn: taskTurn, TaskCode: cached.taskCode, Via: "inherit"}, nil
 		}
 		g.sessionsMu.Unlock()
 		// no prior route cached — fall through to route (first call in session)
@@ -176,7 +201,8 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		for _, m := range g.registry {
 			if m.ModelID == hid {
 				if up, ok := g.upstreams[m.Upstream]; ok {
-					return up, m.ModelID, nil
+					return routeDecision{Upstream: up, ModelID: m.ModelID, Session: sessionKey,
+						TaskTurn: taskTurn, Via: "strong-hint"}, nil
 				}
 			}
 		}
@@ -184,7 +210,8 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 
 	// hint-only mode (no scorer configured): skip Jev, use default upstream + client model.
 	if g.engine == nil {
-		return g.defaultUpstream(), modelHint, nil
+		return routeDecision{Upstream: g.defaultUpstream(), ModelID: modelHint, Session: sessionKey,
+			TaskTurn: taskTurn, Via: "hint"}, nil
 	}
 
 	// R5 async first-score: serve the hint fallback immediately, score in the
@@ -195,7 +222,8 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 			state = modelHint
 		}
 		g.spawnScore(sessionKey, state, protocol)
-		return g.defaultUpstream(), modelHint, nil
+		return routeDecision{Upstream: g.defaultUpstream(), ModelID: modelHint, Session: sessionKey,
+			TaskTurn: taskTurn, Via: "hint"}, nil
 	}
 
 	// extract state from last user message
@@ -204,23 +232,24 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		state = modelHint
 	}
 
-	upName, modelID, err := scoreRoute(ctx, g.engine, state, g.registry)
+	upName, modelID, taskCode, err := scoreRoute(ctx, g.engine, state, g.registry)
 	if err != nil {
-		return Upstream{}, "", err
+		return routeDecision{}, err
 	}
 	up, ok := g.upstreams[upName]
 	if !ok {
-		return Upstream{}, "", fmt.Errorf("no upstream configured for %s", upName)
+		return routeDecision{}, fmt.Errorf("no upstream configured for %s", upName)
 	}
 	// cache route for this session (tool-loop continuations inherit it)
-	g.cacheRoute(sessionKey, upName, modelID, protocol)
-	return up, modelID, nil
+	g.cacheRoute(sessionKey, upName, modelID, protocol, taskCode)
+	return routeDecision{Upstream: up, ModelID: modelID, Session: sessionKey,
+		TaskTurn: taskTurn, TaskCode: taskCode, Via: "jev"}, nil
 }
 
 // scoreRoute: C3 evaluate + C4 match + C5 select. Reads no Gateway state —
 // safe to call from the request path (under g.mu) or a background goroutine
 // (with snapshots).
-func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry) (upstream, modelID string, err error) {
+func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry) (upstream, modelID, taskCode string, err error) {
 	// C3: Jev Choice over task types
 	criteria := map[string]string{}
 	for _, t := range SeedTaskTypes {
@@ -233,28 +262,28 @@ func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, regis
 		},
 	})
 	if err != nil {
-		return "", "", fmt.Errorf("jev score: %w", err)
+		return "", "", "", fmt.Errorf("jev score: %w", err)
 	}
-	taskCode := resp.Answers["task_type"].Choice
+	taskCode = resp.Answers["task_type"].Choice
 	log.Printf("[route] jev chose task_type=%s (%s) confidence=%.3f", taskCode, ByCode[taskCode].Name, resp.Answers["task_type"].Confidence)
 
 	// C4 + C5: match + select
 	surv := Match(taskCode, registry)
 	chosen, err := Select(surv, taskCode, nil)
 	if err != nil {
-		return "", "", fmt.Errorf("select: %w", err)
+		return "", "", "", fmt.Errorf("select: %w", err)
 	}
 	log.Printf("[route] C4 blocked %d/%d, C5 selected %s (upstream=%s)", len(registry)-len(surv), len(registry), chosen.ModelID, chosen.Upstream)
-	return chosen.Upstream, chosen.ModelID, nil
+	return chosen.Upstream, chosen.ModelID, taskCode, nil
 }
 
 // cacheRoute stores a scored route for the session (tool-loop inheritance).
-func (g *Gateway) cacheRoute(sessionKey, upstream, modelID, protocol string) {
+func (g *Gateway) cacheRoute(sessionKey, upstream, modelID, protocol, taskCode string) {
 	g.sessionsMu.Lock()
 	if g.sessions == nil {
 		g.sessions = make(map[string]cachedRoute)
 	}
-	g.sessions[sessionKey] = cachedRoute{upstream: upstream, modelID: modelID, protocol: protocol}
+	g.sessions[sessionKey] = cachedRoute{upstream: upstream, modelID: modelID, protocol: protocol, taskCode: taskCode}
 	g.sessionsMu.Unlock()
 }
 
@@ -287,7 +316,7 @@ func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
 		// background ctx: must outlive the request that spawned it (77s+ CPU score)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		upName, modelID, err := scoreRoute(ctx, engine, state, registry)
+		upName, modelID, taskCode, err := scoreRoute(ctx, engine, state, registry)
 		if err != nil {
 			log.Printf("[route-async] background score failed: %v", err)
 			return
@@ -296,7 +325,7 @@ func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
 			log.Printf("[route-async] selected upstream %q not configured", upName)
 			return
 		}
-		g.cacheRoute(sessionKey, upName, modelID, protocol)
+		g.cacheRoute(sessionKey, upName, modelID, protocol, taskCode)
 		log.Printf("[route-async] backfilled session route: %s (upstream=%s)", modelID, upName)
 	}()
 }
@@ -388,7 +417,8 @@ func (g *Gateway) rewriteAnthropicModel(body []byte, modelID string) []byte {
 
 // forward: send to upstream + stream response back, with schema conversion
 // (OpenAI↔Anthropic) when client and upstream protocols differ.
-func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, path string, body []byte, clientProto string) {
+func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, dec routeDecision, path string, body []byte, clientProto string) {
+	up := dec.Upstream
 	upstreamProto := up.Protocol
 	// path determined by upstream protocol (not client endpoint)
 	upPath := "/v1/chat/completions"
@@ -413,10 +443,16 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, p
 	}
 	resp, err := g.client.Do(req)
 	if err != nil {
+		g.recordVerdict(dec, 0, "connect_error")
 		http.Error(w, "upstream: "+err.Error(), 502)
 		return
 	}
 	defer resp.Body.Close()
+	outcome := "ok"
+	if resp.StatusCode >= 400 {
+		outcome = "upstream_error"
+	}
+	g.recordVerdict(dec, resp.StatusCode, outcome)
 
 	isStream := strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream")
 	needConvert := clientProto != upstreamProto
@@ -462,4 +498,19 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, up Upstream, p
 		w.WriteHeader(resp.StatusCode)
 		io.Copy(w, resp.Body)
 	}
+}
+
+// recordVerdict appends a C7 routing-outcome event (no-op when no store).
+func (g *Gateway) recordVerdict(dec routeDecision, status int, outcome string) {
+	g.verdicts.Record(VerdictEvent{
+		TS:       time.Now().UnixMilli(),
+		Session:  dec.Session,
+		TaskTurn: dec.TaskTurn,
+		TaskCode: dec.TaskCode,
+		ModelID:  dec.ModelID,
+		Upstream: dec.Upstream.Name,
+		Via:      dec.Via,
+		Status:   status,
+		Outcome:  outcome,
+	})
 }

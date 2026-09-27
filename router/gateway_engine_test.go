@@ -33,7 +33,7 @@ func TestGatewayRouteUsesSystemOneEngine(t *testing.T) {
 		"openai": {Name: "openai", BaseURL: "https://api.openai.com/v1", Protocol: "openai"},
 	})
 
-	up, modelID, err := gw.route(
+	dec, err := gw.route(
 		context.Background(),
 		[]map[string]any{{"role": "user", "content": "implement a function"}},
 		"",
@@ -45,7 +45,7 @@ func TestGatewayRouteUsesSystemOneEngine(t *testing.T) {
 	if engine.calls != 1 {
 		t.Fatalf("engine calls = %d, want 1", engine.calls)
 	}
-	if up.Name != "openai" || modelID == "" {
-		t.Fatalf("route = upstream %q, model %q", up.Name, modelID)
+	if dec.Upstream.Name != "openai" || dec.ModelID == "" {
+		t.Fatalf("route = upstream %q, model %q", dec.Upstream.Name, dec.ModelID)
 	}
 }

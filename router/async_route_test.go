@@ -87,7 +87,7 @@ func TestAsyncRouteServesFallbackThenBackfills(t *testing.T) {
 	gw := asyncTestGateway(engine)
 
 	start := time.Now()
-	up, modelID, err := gw.route(context.Background(), newTaskMsgs("implement a function"), "client-hint", "openai")
+	dec, err := gw.route(context.Background(), newTaskMsgs("implement a function"), "client-hint", "openai")
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("route() error = %v", err)
@@ -95,8 +95,8 @@ func TestAsyncRouteServesFallbackThenBackfills(t *testing.T) {
 	if elapsed >= 80*time.Millisecond {
 		t.Fatalf("route() blocked %v — async path must not wait for scoring", elapsed)
 	}
-	if up.Name != "openai" || modelID != "client-hint" {
-		t.Fatalf("fallback = %q/%q, want openai/client-hint", up.Name, modelID)
+	if dec.Upstream.Name != "openai" || dec.ModelID != "client-hint" {
+		t.Fatalf("fallback = %q/%q, want openai/client-hint", dec.Upstream.Name, dec.ModelID)
 	}
 	// background score spawned (goroutine may not have started yet — wait for it)
 	waitFor(t, 2*time.Second, "score spawned", func() bool { return engine.callCount() >= 1 })
@@ -110,15 +110,15 @@ func TestAsyncRouteServesFallbackThenBackfills(t *testing.T) {
 	})
 
 	// tool-loop continuation inherits the scored route without a second evaluation
-	up, modelID, err = gw.route(context.Background(), toolLoopMsgs, "client-hint", "openai")
+	dec, err = gw.route(context.Background(), toolLoopMsgs, "client-hint", "openai")
 	if err != nil {
 		t.Fatalf("continuation route() error = %v", err)
 	}
-	if modelID == "client-hint" || modelID == "" {
-		t.Fatalf("continuation modelID = %q, want inherited Jev route (not the hint)", modelID)
+	if dec.ModelID == "client-hint" || dec.ModelID == "" {
+		t.Fatalf("continuation modelID = %q, want inherited Jev route (not the hint)", dec.ModelID)
 	}
-	if up.Name != "openai" {
-		t.Fatalf("continuation upstream = %q, want openai", up.Name)
+	if dec.Upstream.Name != "openai" {
+		t.Fatalf("continuation upstream = %q, want openai", dec.Upstream.Name)
 	}
 	if n := engine.callCount(); n != 1 {
 		t.Fatalf("engine calls = %d after inheritance, want 1", n)
@@ -134,7 +134,7 @@ func TestAsyncRouteSingleFlight(t *testing.T) {
 
 	// two rapid requests in the same session before the score completes
 	for i := 0; i < 2; i++ {
-		_, _, err := gw.route(context.Background(), msgs, "client-hint", "openai")
+		_, err := gw.route(context.Background(), msgs, "client-hint", "openai")
 		if err != nil {
 			t.Fatalf("route #%d error = %v", i, err)
 		}
@@ -157,12 +157,12 @@ func TestAsyncRouteEngineErrorDoesNotPoisonCache(t *testing.T) {
 	msgs := newTaskMsgs("implement a function")
 	key := sessionKey(msgs)
 
-	up, modelID, err := gw.route(context.Background(), msgs, "client-hint", "openai")
+	dec, err := gw.route(context.Background(), msgs, "client-hint", "openai")
 	if err != nil {
 		t.Fatalf("route() error = %v — async path must absorb engine errors", err)
 	}
-	if up.Name != "openai" || modelID != "client-hint" {
-		t.Fatalf("fallback = %q/%q", up.Name, modelID)
+	if dec.Upstream.Name != "openai" || dec.ModelID != "client-hint" {
+		t.Fatalf("fallback = %q/%q", dec.Upstream.Name, dec.ModelID)
 	}
 
 	// score fails; inflight cleared; cache stays empty
@@ -180,7 +180,7 @@ func TestAsyncRouteEngineErrorDoesNotPoisonCache(t *testing.T) {
 	}
 
 	// next request retries scoring (still serves fallback, never fails)
-	if _, _, err := gw.route(context.Background(), msgs, "client-hint", "openai"); err != nil {
+	if _, err := gw.route(context.Background(), msgs, "client-hint", "openai"); err != nil {
 		t.Fatalf("second route() error = %v", err)
 	}
 	waitFor(t, 2*time.Second, "retry spawned", func() bool { return engine.callCount() >= 2 })
@@ -214,7 +214,7 @@ func TestSyncRouteBlockingPreserved(t *testing.T) {
 	// async disabled (default): route() must block and return the scored route.
 
 	start := time.Now()
-	up, modelID, err := gw.route(context.Background(), newTaskMsgs("implement a function"), "client-hint", "openai")
+	dec, err := gw.route(context.Background(), newTaskMsgs("implement a function"), "client-hint", "openai")
 	elapsed := time.Since(start)
 	if err != nil {
 		t.Fatalf("route() error = %v", err)
@@ -222,10 +222,10 @@ func TestSyncRouteBlockingPreserved(t *testing.T) {
 	if elapsed < 60*time.Millisecond {
 		t.Fatalf("route() returned in %v — sync path must wait for scoring", elapsed)
 	}
-	if modelID == "client-hint" || modelID == "" {
-		t.Fatalf("sync modelID = %q, want scored route", modelID)
+	if dec.ModelID == "client-hint" || dec.ModelID == "" {
+		t.Fatalf("sync modelID = %q, want scored route", dec.ModelID)
 	}
-	if up.Name != "openai" {
-		t.Fatalf("sync upstream = %q", up.Name)
+	if dec.Upstream.Name != "openai" {
+		t.Fatalf("sync upstream = %q", dec.Upstream.Name)
 	}
 }

@@ -57,6 +57,10 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 	case "/api/models", "/api/models/download", "/api/models/download/status":
 		a.modelsHandler(w, r)
+	case "/api/verdicts":
+		a.getVerdicts(w, r)
+	case "/api/measured":
+		a.getMeasured(w, r)
 	case "/api/upstream/test":
 		a.testUpstream(w, r)
 	default:
@@ -300,3 +304,23 @@ async function save(){
 load();
 </script>
 </body></html>`
+
+// getVerdicts: C7 raw routing outcomes (newest first, tail 200).
+func (a *Admin) getVerdicts(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if a.gateway == nil || a.gateway.Verdicts() == nil {
+		json.NewEncoder(w).Encode(map[string]any{"events": []any{}})
+		return
+	}
+	json.NewEncoder(w).Encode(map[string]any{"events": a.gateway.Verdicts().Recent(200)})
+}
+
+// getMeasured: C8 calibration matrix + C9 empty layers.
+func (a *Admin) getMeasured(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	if a.gateway == nil || a.gateway.Verdicts() == nil {
+		json.NewEncoder(w).Encode(MeasuredReport{TaskCounts: map[string]int{}})
+		return
+	}
+	json.NewEncoder(w).Encode(a.gateway.Verdicts().Measured())
+}
