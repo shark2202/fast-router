@@ -65,12 +65,12 @@ func (g *Gateway) Verdicts() *VerdictStore { return g.verdicts }
 
 // routeDecision: what route() decided, with the metadata C7 needs.
 type routeDecision struct {
-	Upstream  Upstream
-	ModelID   string
-	Session   string
-	TaskTurn  string // "new" | "continue"
-	TaskCode  string // A-J for jev routes (inherited on continuation)
-	Via       string // "jev" | "hint" | "inherit" | "strong-hint"
+	Upstream Upstream
+	ModelID  string
+	Session  string
+	TaskTurn string // "new" | "continue"
+	TaskCode string // A-J for jev routes (inherited on continuation)
+	Via      string // "jev" | "hint" | "inherit" | "strong-hint"
 }
 
 type cachedRoute struct {
@@ -420,10 +420,19 @@ func (g *Gateway) rewriteAnthropicModel(body []byte, modelID string) []byte {
 func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, dec routeDecision, path string, body []byte, clientProto string) {
 	up := dec.Upstream
 	upstreamProto := up.Protocol
-	// path determined by upstream protocol (not client endpoint)
+	// path determined by upstream protocol (not client endpoint).
+	// Versioned base URLs (…/v1, …/v4 — e.g. GLM open.bigmodel.cn/api/paas/v4)
+	// already carry the version: append only the method path.
 	upPath := "/v1/chat/completions"
 	if upstreamProto == "anthropic" {
 		upPath = "/v1/messages"
+	}
+	if versionedBaseURL(up.BaseURL) {
+		if upstreamProto == "anthropic" {
+			upPath = "/messages"
+		} else {
+			upPath = "/chat/completions"
+		}
 	}
 	// convert request body if protocols differ
 	body, _ = schema.ConvertRequest(body, clientProto, upstreamProto)
@@ -473,13 +482,17 @@ func (g *Gateway) forward(w http.ResponseWriter, r *http.Request, dec routeDecis
 			data := strings.TrimPrefix(line, "data: ")
 			if conv.IsDone([]byte(data)) {
 				w.Write([]byte("data: [DONE]\n\n"))
-				if flusher != nil { flusher.Flush() }
+				if flusher != nil {
+					flusher.Flush()
+				}
 				break
 			}
 			for _, out := range conv.ConvertChunk([]byte(data)) {
 				w.Write([]byte(out))
 			}
-			if flusher != nil { flusher.Flush() }
+			if flusher != nil {
+				flusher.Flush()
+			}
 		}
 	} else if needConvert {
 		// non-stream: convert response body
@@ -513,4 +526,22 @@ func (g *Gateway) recordVerdict(dec routeDecision, status int, outcome string) {
 		Status:   status,
 		Outcome:  outcome,
 	})
+}
+
+// versionedBaseURL reports whether the URL's last path segment is a version
+// tag like v1, v2, v4 (case-insensitive, digits only after 'v').
+func versionedBaseURL(base string) bool {
+	u := strings.TrimRight(base, "/")
+	if i := strings.LastIndex(u, "/"); i >= 0 {
+		seg := u[i+1:]
+		if len(seg) >= 2 && (seg[0] == 'v' || seg[0] == 'V') {
+			for _, c := range seg[1:] {
+				if c < '0' || c > '9' {
+					return false
+				}
+			}
+			return true
+		}
+	}
+	return false
 }

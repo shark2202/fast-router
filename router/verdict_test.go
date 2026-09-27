@@ -175,3 +175,20 @@ func TestAdminVerdictEndpoints(t *testing.T) {
 	}
 	_ = store
 }
+
+func TestVersionedBaseURL(t *testing.T) {
+	cases := map[string]bool{
+		"https://open.bigmodel.cn/api/paas/v4": true,
+		"https://api.openai.com/v1":            true,
+		"https://api.anthropic.com":            false,
+		"https://api.deepseek.com/v1/":         true, // trailing slash tolerated
+		"https://example.com/very":             false, // letters after v
+		"https://example.com/v":                false, // no digits
+		"https://example.com/v12":              true,
+	}
+	for base, want := range cases {
+		if got := versionedBaseURL(base); got != want {
+			t.Errorf("versionedBaseURL(%q) = %v, want %v", base, got, want)
+		}
+	}
+}
