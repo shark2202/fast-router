@@ -44,6 +44,48 @@ tags: [jev, system-one, integration, research]
 | openjev-sglang | `5f633dccaf5a45c7e0a45d06653d019bb6bf1441` | 目标是 SGLang + Qwen3.6-35B-A3B + B200；API 与模型进程拆分，偏 GPU 部署 |
 | AgentJev | `a965ca8ff06ccabc0c796dca5447b55cc2069cee` | Apache-2.0；`/api/evaluate` 自定义协议；checkpoint 是专用 decision head，不是普通 causal GGUF |
 
+## 重新校正：当前场景其实有更近的方案
+
+前一版把候选主要分成“Python HTTP sidecar”和“现有 native 实现”，不够准确。继续核查社区项目后，发现下面三个方案与 fast-router 当前目标更接近：
+
+| 方案 | 与当前工程的贴合点 | 不能忽略的边界 | 适合的目标 |
+|---|---|---|---|
+| **jev-rs** | Rust 可执行程序；可通过 `llama-server` 读取任意 GGUF；自身提供 `jev serve` 和 `/v1/systemone`；支持 macOS arm64/x86_64 与 Linux；还有 Laya/AgentJev 等 whole-request backend | 当前主线仍是外部 `llama-server`/HTTP 进程，不是把 llama.cpp 直接嵌入 Go；最多 26 个选项；仍需核实与 fast-router 现有 P1 数据集的结果一致性 | **保留 Ornith/MiniCPM5/GGUF 方向，同时把推理移到更适合 Metal 的进程** |
+| **laya.cpp** | MIT；原生 C++ CLI/server；提供 `/v1/systemone`；有 CUDA、Vulkan 和 Apple Core ML 后端；服务端支持并发 batch | 使用 Laya 导出/编译后的 checkpoint，不是把现有任意 GGUF 直接换进去；需要模型转换和平台构建链 | **优先 P2、Apple Silicon/Metal/Core ML、本地 native 部署** |
+| **lev** | Jolt/Clojure 方案；通过链接的 llama.cpp 支持 chat GGUF；提供 `/v1/systemone`；支持 Qwen3.5、MiniCPM5、Metal、confidence gate 和批量接口 | 引入 Clojure/Jolt runtime，打包和跨平台复杂度明显高于 Go/Rust；它是完整替代 runtime，不是简单库 | **愿意更换 runtime，并希望同时获得模型升级、置信度门控和 System One 服务** |
+
+这意味着“没有适合当前场景的社区项目”是不正确的。更准确的结论是：
+
+* **若当前场景的硬约束是保留现有 GGUF 和任务质量**：优先试 `jev-rs`，因为它最接近“现有模型 + llama.cpp + System One HTTP”。
+* **若硬约束是 P2 降到亚秒级，且设备是 Apple Silicon**：优先试 `laya.cpp` 或 `lev`；但这会把模型/runtime 选择从“复用当前 native C3”升级为“更换决策引擎”。
+* **若硬约束是继续维持 Go 单进程、无 Python/Rust/Clojure sidecar**：社区项目没有零成本替换；应继续改当前 Zig/llama.cpp 路径，或把 jev-rs 的 scorer 思路移植进现有 FFI。
+
+### 为什么之前仍建议先做 HTTP client
+
+HTTP client 不是因为社区没有实现，而是因为它是三种路线的共同低耦合接缝：
+
+```text
+fast-router Gateway
+        │
+        └── POST /v1/systemone
+              ├── jev-rs
+              ├── laya.cpp
+              ├── Laya Python server
+              └── local-jev / llm2jev
+```
+
+因此，先实现一个小的 HTTP client 并不等于继续自研 Jev；它是为了让 fast-router 能够快速替换/对照这些社区实现。真正需要避免的是重复实现一个已经由 `jev-rs` 或 `laya.cpp` 提供的推理 runtime。
+
+### 当前推荐排序
+
+按本项目现状（Go + Zig + llama.cpp + GGUF + P2 过慢）排序：
+
+1. **jev-rs sidecar**：最低改造风险，最接近现有模型和 API。
+2. **laya.cpp**：P2 潜力最大，但模型格式和决策模型发生变化。
+3. **lev**：能力最完整，但 runtime 迁移成本最高。
+4. **llm2jev**：适合做 Python/MLX/SGLang 对照，不是当前发行形态的第一选择。
+5. **Laya Python / local-jev**：适合质量基线和服务验证。
+
 ## 候选方案
 
 | 方案 | 类型与当前能力 | 与 fast-router 的集成方式 | 适用理由 | 主要代价/风险 | 当前判断 |
@@ -135,3 +177,5 @@ tags: [jev, system-one, integration, research]
 6. [openjev-sglang 上游](https://github.com/ekzhang/openjev-sglang)
 7. [SemIf 上游](https://github.com/TheoLeeCJ/SemIf-OpenJev)
 8. [AgentJev 上游](https://github.com/malevrigns/agent-jev)
+9. [laya.cpp 上游](https://github.com/lkarlslund/laya.cpp)
+10. [lev 上游](https://github.com/jlt-commons/lev)
