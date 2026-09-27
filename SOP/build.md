@@ -1,9 +1,24 @@
 # fast-router 构建·打包·分发 SOP
 
-> **版本**: 0.1.0 · **更新**: 2026-09-25
+> **版本**: 0.1.0 · **更新**: 2026-09-27
 >
 > 本文档是 fast-router 从源码到用户手中的完整标准作业流程（SOP）。
+> 默认构建产物输出到 `./dist`，该目录已加入 `.gitignore`。
 > 分三个阶段：**构建**（Go binary + zig wrapper）→ **打包**（zip + llama.cpp 预编译库 + config 模板）→ **分发**（用户下载→解压→首启→admin UI 配置）。
+
+## 验证状态与支持范围
+
+本 SOP 不是“所有平台完整发布包已经验收”的证明，而是构建和验收标准。当前验证结论如下：
+
+| 能力 | macOS | Linux | Windows | 状态 |
+|------|-------|-------|---------|------|
+| Go 主程序交叉编译 | ✅ 已在本机验证 | ✅ 已在本机交叉编译验证 | ✅ 已在本机交叉编译验证 | 六组合均通过 `CGO_ENABLED=0 go build` |
+| Zig/native wrapper 构建 | ✅ Mac x64 主机 POC | ✅ Mac x64 主机 POC | ✅ Mac x64 主机 POC | 六组合均已生成目标格式 wrapper；仍需目标机运行时验收 |
+| 完整 ZIP 分发包 | ⚠️ 需实机冒烟 | ⚠️ 需 Linux 实机冒烟 | ⚠️ 需 Windows 实机冒烟 | 不能仅以 Go 交叉编译代替 |
+| 真实运行时验收 | 当前开发机可做 | 未完成 | 未完成 | 发布前必须补齐 |
+
+**支持目标**：macOS、Linux、Windows；每个平台支持 `amd64` 和 `arm64`。
+**发布边界**：在目标平台的 native wrapper、llama.cpp 动态库、模型加载、管理 UI、OpenAI/Anthropic 请求和流式转发全部通过验收前，不得宣称“六平台完整包已验证”。
 
 ---
 
@@ -25,7 +40,7 @@
 | 工具 | 版本 | 用途 | 验证 |
 |------|------|------|------|
 | **Go** | ≥ 1.25 | 编译 fast-router binary（CGO_ENABLED=0） | `go version` |
-| **Zig** | ≥ 0.14 | 编译 libfrwrapper（@cImport llama.h） | `zig version` |
+| **Zig** | 0.14.x | 编译 libfrwrapper（@cImport llama.h，当前 `build.zig` API） | `zig version` |
 | **curl** | 任意 | 下载 llama.cpp nightly 预编译包 | `curl --version` |
 | **zip** | 任意 | 打包分发 zip | `zip --version` |
 
@@ -51,11 +66,14 @@
 ### 2.1 Go binary（交叉编译，6 平台）
 
 ```bash
-# 单一源码，交叉编译到所有目标平台
+OUTDIR=dist
+mkdir -p "$OUTDIR"
+
+# 单一源码，交叉编译到所有目标平台；产物写入 ./dist
 for plat in "darwin/amd64" "darwin/arm64" "linux/amd64" "linux/arm64" "windows/amd64" "windows/arm64"; do
   os=${plat%/*}; arch=${plat#*/}; ext=""; [ "$os" = "windows" ] && ext=".exe"
   CGO_ENABLED=0 GOOS="$os" GOARCH="$arch" \
-    go build -o "fast-router-${os}-${arch}${ext}" ./cmd/fast-router
+    go build -o "$OUTDIR/fast-router-${os}-${arch}${ext}" ./cmd/fast-router
 done
 ```
 
@@ -69,28 +87,36 @@ done
 ```bash
 # 本机构建（macOS x64 示例）
 cd zig
-zig build-lib frwrapper.zig -dynamic \
-  -Iinclude \
-  -L/path/to/llama-bins/llama-b11175 \
-  -lllama -lggml-base -lggml-cpu \
-  -O ReleaseFast
+zig build \
+  -Dtarget=x86_64-macos \
+  -Dllama_dir=/path/to/llama-bins/llama-b11175 \
+  -Doptimize=ReleaseFast \
+  --prefix /tmp/fast-router-zig
 ```
+
+`llama_dir` 必须指向**与目标平台和架构匹配**的 llama.cpp 动态库/链接库目录，
+不能拿 macOS arm64 库构建 Linux、Windows 或 macOS amd64 wrapper。
+Linux 目标可使用 Zig 自带 libc；如需兼容指定发行版，可通过 `-Dsysroot`
+锁定目标 glibc/musl。Windows 目标使用 `windows-gnu`，需要从目标 DLL 生成
+import library；只有运行时 DLL 不足以完成 wrapper 链接。
 
 | 参数 | 说明 |
 |------|------|
-| `-dynamic` | 输出共享库（.dylib/.so/.dll） |
-| `-Iinclude` | 头文件目录（llama.h + ggml*.h，vendored） |
-| `-L<path>` | llama.cpp 预编译库目录 |
-| `-lllama` | 链接 libllama（注意：两个 l） |
-| `-lggml-base -lggml-cpu` | 链接 ggml 依赖 |
-| `-O ReleaseFast` | 优化 |
+| `-Dtarget` | 目标平台和架构 |
+| `-Dllama_dir` | 目标平台 llama.cpp 动态库/链接库目录 |
+| `-Dggml_cpu_lib` | 目标平台对应的 ggml CPU 库名，例如 `ggml-cpu-x64` |
+| `-Dsysroot` | 可选的目标 sysroot；用于锁定 Linux/Windows 兼容环境 |
+| `-Doptimize=ReleaseFast` | 优化 |
+| `--prefix` | Zig 安装输出目录；wrapper 位于其 `lib/` 下 |
 
-**交叉编译**（zig 的强项）：
+**交叉编译**（Zig 支持，但依赖必须匹配目标平台）：
 ```bash
-zig build-lib frwrapper.zig -dynamic -Iinclude \
-  -target aarch64-linux-gnu \
-  -L/path/to/linux-libs \
-  -lllama -lggml-base -lggml-cpu -O ReleaseFast
+cd zig
+zig build \
+  -Dtarget=aarch64-linux-gnu \
+  -Dllama_dir=/path/to/linux-arm64-libs \
+  -Doptimize=ReleaseFast \
+  --prefix /tmp/fast-router-linux-arm64
 ```
 
 Zig target 映射：
@@ -101,8 +127,8 @@ Zig target 映射：
 | darwin/arm64 | `aarch64-macos` |
 | linux/amd64 | `x86_64-linux-gnu` |
 | linux/arm64 | `aarch64-linux-gnu` |
-| windows/amd64 | `x86_64-windows-msvc` |
-| windows/arm64 | `aarch64-windows-msvc` |
+| windows/amd64 | `x86_64-windows-gnu` |
+| windows/arm64 | `aarch64-windows-gnu` |
 
 ### 2.3 llama.cpp 预编译库（不用编译）
 
@@ -158,31 +184,85 @@ DYLD_LIBRARY_PATH=/path/to/llama-libs \
 2. Zig 交叉编译 libfrwrapper
 3. 下载 llama.cpp nightly 预编译包 + 解压 libllama/libggml
 4. 组装 zip（binary + lib/ + config 模板 + README）
-5. 输出到 `dist/`
+5. 输出到 `./dist/`（可用 `OUTDIR` 覆盖）
+
+脚本现在会在 Zig、下载/本地归档、解压、目标库缺失或 wrapper 产物缺失时直接失败，
+不会把不完整的 ZIP 当作成功产物。可用 `PLATFORM_LIST` 先验证单个平台：
+
+```bash
+PLATFORM_LIST="darwin/amd64" ./scripts/pack.sh
+```
+
+### 3.1.1 离线/纯本地构建
+
+准备六个平台的 llama.cpp 归档到同一个本地目录，文件名必须与脚本映射一致：
+
+```text
+llama-b11175-bin-macos-x64.tar.gz
+llama-b11175-bin-macos-arm64.tar.gz
+llama-b11175-bin-ubuntu-x64.tar.gz
+llama-b11175-bin-ubuntu-arm64.tar.gz
+llama-b11175-bin-win-cpu-x64.zip
+llama-b11175-bin-win-cpu-arm64.zip
+```
+
+执行离线构建：
+
+```bash
+OFFLINE=1 \
+LLAMA_ARCHIVE_DIR=/path/to/local/llama-archives/b11175 \
+./scripts/pack.sh
+```
+
+`OFFLINE=1` 时脚本不会调用 `curl`，只读取本地归档；缺少任一目标归档会立即失败。
+归档可以来自内网制品库、NAS、U 盘或已审核的本地缓存，不要求访问 GitHub。
+
+如需锁定指定发行版或 Windows SDK，可显式提供对应 sysroot：
+
+```bash
+export ZIG_SYSROOT_LINUX_AMD64=/opt/sysroots/x86_64-linux-gnu
+export ZIG_SYSROOT_LINUX_ARM64=/opt/sysroots/aarch64-linux-gnu
+export ZIG_SYSROOT_WINDOWS_AMD64=/opt/sysroots/x86_64-windows-msvc
+export ZIG_SYSROOT_WINDOWS_ARM64=/opt/sysroots/aarch64-windows-msvc
+```
+
+Windows 构建会从目标 DLL 自动生成 `llama.lib`、`ggml-base.lib` 和目标
+`ggml-cpu` import library；只有 `.dll` 运行时文件不能直接完成 wrapper 链接。
+
+完整发布仍必须执行本节 ZIP 内容检查和目标平台冒烟测试。
 
 ### 3.2 手动打包（单平台示例：darwin/amd64）
 
 ```bash
+OUTDIR=dist
 PKG=fast-router-0.1.0-darwin-amd64
-mkdir -p $PKG/lib
+PKG_DIR="$OUTDIR/$PKG"
+mkdir -p "$PKG_DIR/lib"
 
 # 1. Go binary
-CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o $PKG/fast-router ./cmd/fast-router
+CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 \
+  go build -o "$PKG_DIR/fast-router" ./cmd/fast-router
 
 # 2. Zig wrapper
-cd zig && zig build-lib frwrapper.zig -dynamic -Iinclude \
-  -L/path/to/llama-bins -lllama -lggml-base -lggml-cpu -O ReleaseFast \
-  -o ../$PKG/lib/libfrwrapper.dylib && cd ..
+(
+  cd zig
+  zig build \
+    -Dtarget=x86_64-macos \
+    -Dllama_dir=/path/to/llama-bins \
+    -Doptimize=ReleaseFast \
+    --prefix /tmp/fast-router-zig
+)
+cp /tmp/fast-router-zig/lib/libfrwrapper.dylib "$PKG_DIR/lib/"
 
 # 3. llama.cpp 共享库
-cp /path/to/llama-bins/libllama.dylib $PKG/lib/
-cp /path/to/llama-bins/libggml*.dylib $PKG/lib/
+cp /path/to/llama-bins/libllama.dylib "$PKG_DIR/lib/"
+cp /path/to/llama-bins/libggml*.dylib "$PKG_DIR/lib/"
 
 # 4. config 模板（不含 API key）
-cp fast-router.example.json $PKG/
+cp fast-router.example.json "$PKG_DIR/"
 
 # 5. README
-cat > $PKG/README.txt <<'EOF'
+cat > "$PKG_DIR/README.txt" <<'EOF'
 fast-router 0.1.0 (darwin/amd64)
 
 Quick start:
@@ -194,7 +274,10 @@ Quick start:
 EOF
 
 # 6. zip
-zip -r $PKG.zip $PKG/
+(
+  cd "$OUTDIR"
+  zip -qr "${PKG}.zip" "$PKG/"
+)
 ```
 
 ### 3.3 zip 内容
@@ -297,25 +380,35 @@ export ANTHROPIC_API_KEY=any
 
 ### 构建后
 
-- [ ] `go test ./router/... ./router/schema/...` 全 PASS（30 测试）
+- [ ] `go test ./...` 全 PASS
 - [ ] `CGO_ENABLED=0 go build ./cmd/fast-router` 成功
 - [ ] 6 平台交叉编译成功（darwin/linux/windows × amd64/arm64）
-- [ ] `zig build-lib` 生成 libfrwrapper.{dylib,so,dll}
+- [ ] `zig build` 生成目标平台的 libfrwrapper.{dylib,so,dll}
 - [ ] llama.cpp nightly 包含 libllama + libggml 共享库
+- [ ] 记录 Go、Zig、llama.cpp 版本和目标平台
 
 ### 打包后
 
 - [ ] zip 解压后含 fast-router + lib/ + fast-router.example.json + README.txt
-- [ ] zip 大小 ~10-15MB
-- [ ] `./fast-router --config fast-router.example.json` 能启动
+- [ ] ZIP 位于 `./dist/`，且 `unzip -l` 内容完整
+- [ ] 校验动态库架构与目标平台匹配
+- [ ] `./fast-router --config fast-router.example.json` 能启动（在目标平台执行）
 - [ ] `http://localhost:8080/admin` 能打开
 - [ ] `/api/config` GET 返回 JSON
 - [ ] `/api/models` GET 返回模型列表
-- [ ] `DYLD_LIBRARY_PATH=./lib`（macOS）设好后能加载 Jev scorer
+- [ ] macOS 设置 `DYLD_LIBRARY_PATH=./lib` 后能加载 Jev scorer
+- [ ] Linux 设置 `LD_LIBRARY_PATH=./lib` 后能加载 Jev scorer
+- [ ] Windows 将 `lib/` 加入 `PATH` 后能加载 DLL 和 Jev scorer
+
+macOS x64 离线 ZIP 已完成一次真实解压启动冒烟：
+配置为 loopback 端口后，`/api/config`、`/admin` 和 `/v1/models` 均返回成功。
+这只证明 hint-only 启动路径，不等于 macOS native GGUF 推理或 Linux/Windows
+运行时已验收。
 
 ### 分发后（用户侧）
 
 - [ ] 解压 → 启动 → admin UI 可访问
+- [ ] macOS、Linux、Windows 各至少完成一次干净环境启动
 - [ ] 配 upstream API key → test 连通性 OK
 - [ ] 下载 GGUF 模型 → config.model.path 自动设
 - [ ] `curl http://localhost:8080/v1/chat/completions -d '{"model":"fast-router","messages":[...]}'` 返回 LLM 响应
@@ -341,12 +434,36 @@ export DYLD_LIBRARY_PATH=/path/to/lib
 export LD_LIBRARY_PATH=/path/to/lib
 # Windows: 把 lib/ 放在 fast-router.exe 同目录
 
-# 如果 libfrwrapper 不存在，构建：
+# 如果 libfrwrapper 不存在，在目标平台或具备对应平台依赖库的构建机上构建：
 cd zig
-zig build-lib frwrapper.zig -dynamic -Iinclude -L/path/to/llama-libs -lllama -lggml-base -lggml-cpu
+zig build \
+  -Dtarget=<目标平台> \
+  -Dllama_dir=/path/to/llama-libs \
+  -Doptimize=ReleaseFast \
+  --prefix /tmp/fast-router-zig
 ```
 
-### zig build-lib 链接错误
+### Windows DLL 加载失败
+
+```
+backend: The specified module could not be found
+```
+
+**原因**：`libfrwrapper.dll` 存在，但它依赖的 `libllama.dll` 或 `libggml*.dll`
+不在可搜索路径中，或 DLL 架构与 `fast-router.exe` 不匹配。
+
+**修复**：
+
+```powershell
+# 在解压后的发行目录执行
+$env:PATH = "$PWD\lib;$env:PATH"
+.\fast-router.exe --config .\fast-router.json
+```
+
+确认 `fast-router.exe`、`libfrwrapper.dll`、`libllama.dll` 和 `libggml*.dll`
+全部为同一架构（amd64 或 arm64）。
+
+### zig build 链接错误
 
 ```
 error: 'ggml.h' file not found

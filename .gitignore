@@ -8,6 +8,8 @@ __pycache__/
 /fast-router
 *.exe
 *.test
+/dist/
+/build/
 
 # zig build artifacts
 zig/zig-out/
@@ -23,6 +25,7 @@ lib/
 # model weights (downloaded on demand)
 *.gguf
 models/
+.cache/llama/
 
 # OS files
 .DS_Store
