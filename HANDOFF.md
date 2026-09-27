@@ -1,6 +1,6 @@
 # HANDOFF — fast-router v1.0
 
-> **Next session focus**: 9B P1 revalidation with clean template (model downloading to /tmp/fr-model/ornith9b.gguf — run `yesnobench` when complete) + C8 LLM-scout/manual review on top of /api/measured + Windows on-device test + codex/claude code real agent integration. (R5 async + batch KV-reuse + template fix + C7 verdict loop all landed 2026-09-27.)
+> **Next session focus**: complete real-upstream roundtrip (GLM key has no balance — code 1113; chain already verified: routing/forwarding/schema-conversion/verdict-capture all reached the real endpoint) + C8 LLM-scout/manual review on top of /api/measured + Windows on-device test + codex/claude code real agent integration. (R5 async + batch KV-reuse + template fix + C7 verdict loop + 9B revalidation all landed 2026-09-27.)
 
 ---
 
@@ -12,8 +12,8 @@ A local-first LLM smart router gateway. Clients (codex/claude code/pi-agent) sen
 
 ## Current state (v1.0 delivered)
 
-- **P1 = 73.3%** (target >70%) — Ornith-1.5-9B + per-candidate yes/no + apply_chat_template — **measured on mangled prompts (v1.0 template bug): needs revalidation; 0.5B recheck 16.7%→23.3% (+6.6pp) suggests 9B ≥ 73.3%**
-- **P2 = 77s raw first score → ~20s est** (batch KV-reuse: 2.1-3.9x measured on 0.5B) — **R5 async: effective P2 < 1s** (first turn forwards on hint, background score backfills session cache, continuations inherit)
+- **P1 = 73.3% (22/30)** (target >70%) — Ornith-1.5-9B + per-candidate yes/no + apply_chat_template — **revalidated 2026-09-27 with clean template: same 73.3%** (C-010 resolved; 0.5B gained +6.6pp from the fix, 9B was already robust)
+- **P2 = 38.6s/sample measured** (was 77s; batch KV-reuse 2.0x on yesnobench's short-state samples, consistent with 0.5B scaling; agent-length states ≈ 3-4x → ~20s est) — **R5 async: effective P2 < 1s** (first turn forwards on hint, background score backfills session cache, continuations inherit)
 - session key now stable across tool loops (fixed v1.0 bug: growing-prefix hash never hit the cache in real agent flows)
 - zigBackend serialized with mutex (llama_context not thread-safe — required by R5 concurrent background scores)
 - **hint-only mode**: fully usable (P2<1s, verified end-to-end with real LLM "pong")
