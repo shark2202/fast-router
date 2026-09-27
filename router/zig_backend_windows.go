@@ -10,11 +10,13 @@ package router
 import (
 	"errors"
 	"runtime"
+	"sync"
 	"syscall"
 	"unsafe"
 )
 
 type zigBackend struct {
+	mu      sync.Mutex // llama_context is not thread-safe; serialize every call
 	dll     *syscall.DLL
 	frLoad  *syscall.Proc
 	frScore *syscall.Proc
@@ -50,6 +52,8 @@ func NewZigBackend(libPath, modelPath string) (*zigBackend, error) {
 }
 
 func (b *zigBackend) ChoiceScore(prompt string, codes []string) ([]float64, Usage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	cprompt, err := syscall.BytePtrFromString(prompt)
 	if err != nil {
 		return nil, Usage{}, err
@@ -89,6 +93,8 @@ func (b *zigBackend) ChoiceScore(prompt string, codes []string) ([]float64, Usag
 }
 
 func (b *zigBackend) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.handle != 0 {
 		b.frFree.Call(b.handle)
 		b.handle = 0

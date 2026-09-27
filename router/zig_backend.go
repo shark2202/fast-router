@@ -12,6 +12,8 @@ package router
 import (
 	"errors"
 	"fmt"
+	"runtime"
+	"sync"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -19,10 +21,14 @@ import (
 
 // zigBackend implements Backend by dlopen-ing libfrwrapper and calling
 // fr_load/fr_score/fr_free. The zig wrapper hides llama.cpp structs.
+// A single llama_context is NOT thread-safe: mu serializes every FFI call
+// (required since R5 async scoring can run background scores concurrently).
 type zigBackend struct {
+	mu sync.Mutex
 	frLoad func(path *byte) unsafe.Pointer
 	frScore func(h unsafe.Pointer, prompt *byte, promptLen uintptr, codes **byte, nCands int32, out *float32) int32
 	frScoreYesno func(h unsafe.Pointer, prompt *byte, promptLen uintptr, yesTokenId int32, outLogit *float32) int32
+	frScoreYesnoBatch func(h unsafe.Pointer, prompts **byte, nPrompts int32, yesTokenId int32, outLogits *float32) int32
 	frGetTokenId func(h unsafe.Pointer, word *byte, wordLen uintptr) int32
 	frApplyTemplate func(h unsafe.Pointer, msgsJson *byte, msgsLen uintptr, outBuf *byte, outBufLen uintptr, addAss bool) int32
 	frFree  func(h unsafe.Pointer)
@@ -43,6 +49,7 @@ func NewZigBackend(libPath, modelPath string) (*zigBackend, error) {
 	purego.RegisterLibFunc(&b.frLoad, lib, "fr_load")
 	purego.RegisterLibFunc(&b.frScore, lib, "fr_score")
 	purego.RegisterLibFunc(&b.frScoreYesno, lib, "fr_score_yesno")
+	purego.RegisterLibFunc(&b.frScoreYesnoBatch, lib, "fr_score_yesno_batch")
 	purego.RegisterLibFunc(&b.frGetTokenId, lib, "fr_get_token_id")
 	purego.RegisterLibFunc(&b.frApplyTemplate, lib, "fr_apply_template")
 	purego.RegisterLibFunc(&b.frFree, lib, "fr_free")
@@ -62,6 +69,8 @@ func NewZigBackend(libPath, modelPath string) (*zigBackend, error) {
 // ChoiceScore implements Backend: tokenize+verify candidates+decode+logits.
 // The zig wrapper does the heavy lifting; we just marshal strings and softmax.
 func (b *zigBackend) ChoiceScore(prompt string, codes []string) ([]float64, Usage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	// Build C prompt (null-terminated).
 	cprompt, err := cString(prompt)
 	if err != nil {
@@ -92,6 +101,8 @@ func (b *zigBackend) ChoiceScore(prompt string, codes []string) ([]float64, Usag
 
 // GetTokenID: tokenize a single word, return its token id.
 func (b *zigBackend) GetTokenID(word string) (int32, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	cword, _ := cString(word)
 	defer cStringFree(cword)
 	id := b.frGetTokenId(b.handle, cword, uintptr(len(word)))
@@ -106,6 +117,8 @@ func (b *zigBackend) GetTokenID(word string) (int32, error) {
 // addAssistant: whether to append assistant prompt (true for scoring)
 // Returns the formatted prompt string.
 func (b *zigBackend) ApplyChatTemplate(messages string, addAssistant bool) (string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	cmsgs, _ := cString(messages)
 	defer cStringFree(cmsgs)
 	buf := make([]byte, 16384)
@@ -118,6 +131,8 @@ func (b *zigBackend) ApplyChatTemplate(messages string, addAssistant bool) (stri
 
 // Close releases the model/context.
 func (b *zigBackend) Close() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	if b.handle != nil {
 		b.frFree(b.handle)
 		b.handle = nil
@@ -128,6 +143,8 @@ func (b *zigBackend) Close() {
 // For each candidate, constructs a prompt asking 'is this about X? yes/no',
 // runs one forward, extracts the 'yes' token logit. Returns logits per candidate.
 func (b *zigBackend) ScoreYesNo(prompts []string, yesTokenID int32) ([]float64, Usage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	out := make([]float64, len(prompts))
 	for i, p := range prompts {
 		cprompt, _ := cString(p)
@@ -140,6 +157,31 @@ func (b *zigBackend) ScoreYesNo(prompts []string, yesTokenID int32) ([]float64, 
 		out[i] = float64(logit)
 	}
 	return out, Usage{InputTokens: 0, OutputTokens: len(prompts)}, nil
+}
+
+// ScoreYesNoBatch: all candidates in ONE FFI call — the zig side finds the
+// longest common token prefix, prefills it once, decodes only each candidate's
+// differing suffix and rewinds the KV between candidates (see
+// fr_score_yesno_batch in zig/frwrapper.zig). Cuts N full prefills to
+// 1 shared prefill + N short suffix decodes.
+func (b *zigBackend) ScoreYesNoBatch(prompts []string, yesTokenID int32) ([]float64, Usage, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(prompts) == 0 {
+		return nil, Usage{}, nil
+	}
+	cptrs, backing := buildCStringArray(prompts)
+	defer keepAlive(backing)
+	out := make([]float32, len(prompts))
+	ret := b.frScoreYesnoBatch(b.handle, cptrs, int32(len(prompts)), yesTokenID, &out[0])
+	if ret != 0 {
+		return nil, Usage{}, frScoreError(ret)
+	}
+	logits := make([]float64, len(out))
+	for i, v := range out {
+		logits[i] = float64(v)
+	}
+	return logits, Usage{InputTokens: 0, OutputTokens: len(prompts)}, nil
 }
 
 // --- cgo-free C string helpers ---
@@ -179,5 +221,9 @@ func buildCStringArray(strs []string) (**byte, [][]byte) {
 func freeCStringArray(_ **byte, _ [][]byte) {
 	// slices GC'd once ptrs/backing unreferenced
 }
+
+// keepAlive pins backing C-string slices until the caller returns
+// (their pointers are held only as raw values inside FFI calls).
+func keepAlive(backing [][]byte) { runtime.KeepAlive(backing) }
 
 

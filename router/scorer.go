@@ -71,6 +71,14 @@ type ExtendedBackend interface {
 	ApplyChatTemplate(messages string, addAssistant bool) (string, error)
 }
 
+// YesNoBatcher is an OPTIONAL ExtendedBackend extension: score all candidates
+// in one call with shared-prefix KV reuse (zig fr_score_yesno_batch — 1 full
+// prefill + N short suffix decodes instead of N full prefills). Backends that
+// don't implement it fall back to per-candidate ScoreYesNo.
+type YesNoBatcher interface {
+	ScoreYesNoBatch(prompts []string, yesTokenID int32) ([]float64, Usage, error)
+}
+
 // --- C3 scorer: Choice logic over a Backend ---
 
 type Scorer struct {
@@ -264,8 +272,15 @@ yesID, err := ext.GetTokenID("yes")
 		}
 		prompts[i] = prompt
 	}
-	// Score each candidate
-logits, usage, err := ext.ScoreYesNo(prompts, yesID)
+	// Score each candidate: batched shared-prefix call when available,
+	// per-candidate calls otherwise.
+	var logits []float64
+	var usage Usage
+	if bb, ok := ext.(YesNoBatcher); ok {
+		logits, usage, err = bb.ScoreYesNoBatch(prompts, yesID)
+	} else {
+		logits, usage, err = ext.ScoreYesNo(prompts, yesID)
+	}
 	if err != nil {
 		return Answer{}, 0, 0, err
 	}
