@@ -2,8 +2,8 @@
 type: Build and Test
 title: fast-router 构建与测试指南
 description: 从本地测试到六平台打包的操作路径，以及每一步的验证边界。
-tags: [build, test, release, operations]
-timestamp: 2026-09-25T00:00:00+08:00
+tags: [build, test, release, operations, v1.0]
+timestamp: 2026-09-26T18:00:00+08:00
 ---
 
 # 构建与测试
@@ -43,11 +43,19 @@ zig build -Doptimize=ReleaseFast -Dllama_dir=/path/to/llama-bins
 需要 GGUF、`libfrwrapper`、`libllama` 和平台库路径：
 
 ```bash
+# 单 token Choice 打分（历史方法，对照基线）
 DYLD_LIBRARY_PATH=/path/to/llama-libs \
   go run ./cmd/jevbench /path/to/model.gguf
+
+# per-candidate yes/no + apply_chat_template（v1.0 主方法，P1=73.3% 主验收路径）
+DYLD_LIBRARY_PATH=/path/to/llama-libs \
+  go run ./cmd/yesnobench /path/to/model.gguf
+
+# 单样本 Zig/FFI 调试
+go run ./cmd/zigbench /path/to/model.gguf
 ```
 
-Windows/Linux 使用对应的库路径变量。benchmark 结果应单独记录准确率、延迟、模型、平台和库版本；不能把结果写成泛化结论。
+Windows/Linux 使用对应的库路径变量。benchmark 结果应单独记录准确率、延迟、模型、平台和库版本；不能把结果写成泛化结论。任何 P1/P2 数字必须能从 `yesnobench` / `jevbench` 实际跑出。
 
 ## 启动 server
 

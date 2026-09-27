@@ -1,13 +1,17 @@
 # fast-router 项目 Wiki
 
 > OKF v0.1 knowledge bundle。这里是项目工作目录、当前实现、构建流程和已知边界的渐进式入口。
+>
+> **当前基线**：fast-router v1.0 已交付（2026-09-26）。架构/引擎/方法/模型四层全部锁定：
+> hint-only P2<1s 端到端可用；Jev 智能路由 P1=73.3%（Ornith-1.5-9B + per-candidate yes/no + apply_chat_template）。
+> 详细决策见 [交付报告 v1.0](../docs/fast-router-交付报告-v1.0.md)。剩余缺口见 [已知缺口与风险](decisions/known-gaps.md)。
 
 ## 先读
 
 * [项目概览](project-overview.md) - 项目目的、事实来源、成功维度、失败模式与可逆性
 * [工作目录地图](workspace-map.md) - 整个仓库的目录和文件职责
-* [架构与数据流](architecture.md) - C1-C6 路由链、Go/Zig/Python 边界和请求流
-* [实现状态](implementation-status.md) - 已实现、可运行、Mock、规划中与历史 POC 的状态矩阵
+* [架构与数据流](architecture.md) - C1-C6 路由链、System One Engine seam、Go/Zig/Python 边界和请求流
+* [实现状态](implementation-status.md) - v1.0 后的状态矩阵：代码存在 / 测试通过 / 端到端验证 / 设计规划
 * [构建与测试](build-and-test.md) - `SOP/build.md` 的可执行摘要和验证命令
 
 ## 开发者入口

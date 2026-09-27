@@ -3,7 +3,7 @@ type: Documentation Index
 title: fast-router 现有文档索引
 description: docs、book、data 和 SOP 知识资产的分类导航。
 tags: [docs, knowledge, references]
-timestamp: 2026-09-25T00:00:00+08:00
+timestamp: 2026-09-26T18:00:00+08:00
 ---
 
 # 现有文档索引
@@ -14,20 +14,29 @@ timestamp: 2026-09-25T00:00:00+08:00
 * [AGENTS](../AGENTS.md) - Agent 协作和决策规则。
 * [Build SOP](../SOP/build.md) - 构建、打包、分发和故障排查。
 
-## 当前设计与进展
+## 当前交付与进展
 
+* [交付报告 v1.0](../docs/fast-router-交付报告-v1.0.md) - 架构/引擎/方法/模型四层锁定的 v1.0 交付，P1=73.3%，39 测试快照，6 平台。
 * [Go 重写进展](../docs/fast-router-Go重写进展-v0.1.md) - Go C2/C3/C4/C5 状态、Jev API 对齐和剩余工作。
 * [架构设计 v0.2](../docs/fast-router-架构设计-v0.2.md) - litellm/schema fact 校验后的目标架构。
 * [智能路由设计共识](../docs/fast-router-智能路由设计共识-v0.1.md) - 任务轮、Jev、挡死、选模和回流设计。
+* [知识沉淀 v0.1](../docs/fast-router-知识沉淀-v0.1.md) - book 5 阶端到端（含 v0.2-v0.4 增量）。
 * [Python POC 进展](../docs/fast-router-POC进展-v0.1.md) - 早期模型准确率、延迟与边界记录。
 * [架构设计 v0.1](../docs/fast-router-架构设计-v0.1.md) - fact 校验前的草案，主要用于历史对照。
 
 ## 研究
 
 * [Jev / System One 开源实现集成评估](../docs/Jev-开源实现集成评估.md) - 对比 llm2jev、Laya、local-jev、jev-rs 等的集成路径与限制。
+* [System One 引擎抽象与可替换性](../docs/System-One-引擎抽象与可替换性.md) - 区分协议、引擎接口与模型 runtime，核对当前架构的真实替换边界。
+* [LLM2Jev 研究笔记](../docs/LLM2Jev-研究笔记.md) - per-candidate yes/no vs 单 token 的方法学依据。
+* [Ornith-1.5-9B 研究笔记](../docs/Ornith-1.5-9B-研究笔记.md) - v1.0 锁定模型（9B + apply_template，P1=73.3%）。
 * [MiniCPM5-2B 深度研究](../docs/MiniCPM5-2B-深度研究.md) - 模型事实、部署、chat template、tool calling 与 fast-router C3 适配评估。
 * [MiniCPM5-2B 初步研究](../docs/MiniCPM5-2B-研究笔记.md) - 较早的候选模型记录；详细事实核验以深度研究为准。
 * [System 1 可复用性研究](../docs/fast-browser-use-System1架构与可复用性研究.md) - 单 token 候选打分、KV cache、System 2 和解耦建议。
+
+## 审计
+
+* [fast-router audit report 2026-09-26](../docs/audit-report-fast-router-2026-09-26.md) - 仓库结构与已知差距审计，作为 v1.0 之前的 I-DISC 复核素材。
 
 ## 理论与组织
 
