@@ -5,8 +5,9 @@
 // Serves /v1/* (gateway) + /admin + /api/* (admin web UI for config).
 //
 // Usage:
-//   DYLD_LIBRARY_PATH=/tmp/llama-bins/llama-b11175 \
-//   ./fast-router --config ./fast-router.json
+//
+//	DYLD_LIBRARY_PATH=/tmp/llama-bins/llama-b11175 \
+//	./fast-router --config ./fast-router.json
 //
 // On first run (no config file), writes a default template (no API keys —
 // fill them via http://localhost:8080/admin).
@@ -64,6 +65,16 @@ func main() {
 		engine := router.NewNativeSystemOneEngine(scorer)
 		gw = router.NewGateway(engine, registry, cfg.ToUpstreams())
 		log.Printf("Jev scorer ready (model=%s)", cfg.Model.Path)
+		if cfg.Model.FastPath != "" {
+			fbackend, ferr := router.NewZigBackend(cfg.Model.Lib, cfg.Model.FastPath)
+			if ferr != nil {
+				log.Printf("warn: fast-tier model failed to load (%v) — first turns fall back to hint routing", ferr)
+			} else {
+				defer fbackend.Close()
+				gw.SetFastEngine(router.NewNativeSystemOneEngine(router.NewScorer(fbackend, "jev-fast")))
+				log.Printf("fast tier ready (model=%s) — first-turn synchronous routing enabled", cfg.Model.FastPath)
+			}
+		}
 	} else {
 		// No model configured — gateway runs in hint-only mode (model-name strong hint bypasses Jev).
 		gw = router.NewGateway(nil, registry, cfg.ToUpstreams())

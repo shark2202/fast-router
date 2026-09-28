@@ -25,16 +25,17 @@ func (c *Config) AsyncScoreEnabled() bool { return c.AsyncScore == nil || *c.Asy
 
 // ModelConfig: paths to the Jev scorer model + zig wrapper + llama.cpp libs.
 type ModelConfig struct {
-	Path   string `json:"path"`    // GGUF model file
-	Lib    string `json:"lib"`     // libfrwrapper.{so,dylib,dll}
-	LibDir string `json:"lib_dir"` // dir with libllama/libggml (for DYLD_LIBRARY_PATH)
+	Path     string `json:"path"`      // GGUF model file (accurate tier)
+	FastPath string `json:"fast_path"` // optional small GGUF for the fast tier (first-turn synchronous routing)
+	Lib      string `json:"lib"`       // libfrwrapper.{so,dylib,dll}
+	LibDir   string `json:"lib_dir"`   // dir with libllama/libggml (for DYLD_LIBRARY_PATH)
 }
 
 // UpstreamCfg: a real LLM backend to forward to.
 type UpstreamCfg struct {
-	BaseURL  string `json:"base_url"`  // "https://api.openai.com/v1"
-	APIKey   string `json:"api_key"`   // "sk-..."
-	Protocol string `json:"protocol"`  // "openai" or "anthropic"
+	BaseURL  string `json:"base_url"` // "https://api.openai.com/v1"
+	APIKey   string `json:"api_key"`  // "sk-..."
+	Protocol string `json:"protocol"` // "openai" or "anthropic"
 }
 
 // DefaultConfig returns a sane starting point (no API keys — user fills via UI).

@@ -55,6 +55,11 @@ type Gateway struct {
 
 	// C7 verdict feedback: routing outcomes (nil = not configured, no-op)
 	verdicts *VerdictStore
+
+	// two-tier cascade: fast tier = small model, synchronous, gives the first
+	// request an informed route; slow tier (engine) refines in the background.
+	fastEngine SystemOneEngine
+	fastBudget time.Duration
 }
 
 // SetVerdicts attaches the C7 verdict store (nil-safe when never called).
@@ -62,6 +67,15 @@ func (g *Gateway) SetVerdicts(s *VerdictStore) { g.verdicts = s }
 
 // Verdicts exposes the C7 store for the admin API.
 func (g *Gateway) Verdicts() *VerdictStore { return g.verdicts }
+
+// SetFastEngine attaches the fast (small-model) tier for cascade scoring.
+func (g *Gateway) SetFastEngine(e SystemOneEngine) {
+	g.fastEngine = e
+	g.fastBudget = 10 * time.Second
+}
+
+// SetFastBudget overrides the synchronous fast-tier time budget.
+func (g *Gateway) SetFastBudget(d time.Duration) { g.fastBudget = d }
 
 // routeDecision: what route() decided, with the metadata C7 needs.
 type routeDecision struct {
@@ -214,12 +228,33 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 			TaskTurn: taskTurn, Via: "hint"}, nil
 	}
 
-	// R5 async first-score: serve the hint fallback immediately, score in the
-	// background (single-flight per session), backfill the session cache.
+	// R5 async first-score: serve an informed route immediately, refine in the
+	// background (single-flight per session). Fast tier (small model) scores
+	// synchronously within a time budget; slow tier backfills/overwrites.
 	if g.asyncScore {
 		state := lastUserText(messages, protocol)
 		if state == "" {
 			state = modelHint
+		}
+		if g.fastEngine != nil {
+			budget := g.fastBudget
+			if budget <= 0 {
+				budget = 10 * time.Second
+			}
+			fctx, fcancel := context.WithTimeout(ctx, budget)
+			upName, modelID, taskCode, ferr := scoreRoute(fctx, g.fastEngine, state, g.registry, g.upstreams)
+			fcancel()
+			if ferr == nil {
+				if up, ok := g.upstreams[upName]; ok {
+					// seed the session cache with the fast route NOW so continuations
+					// inherit it instead of re-scoring; the slow tier overwrites later.
+					g.cacheRoute(sessionKey, upName, modelID, protocol, taskCode)
+					g.spawnScore(sessionKey, state, protocol) // slow tier refines
+					return routeDecision{Upstream: up, ModelID: modelID, Session: sessionKey,
+						TaskTurn: taskTurn, TaskCode: taskCode, Via: "fast"}, nil
+				}
+			}
+			// fast tier failed/timed out — hint fallback + slow spawn below
 		}
 		g.spawnScore(sessionKey, state, protocol)
 		return routeDecision{Upstream: g.defaultUpstream(), ModelID: modelHint, Session: sessionKey,
@@ -232,7 +267,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		state = modelHint
 	}
 
-	upName, modelID, taskCode, err := scoreRoute(ctx, g.engine, state, g.registry)
+	upName, modelID, taskCode, err := scoreRoute(ctx, g.engine, state, g.registry, g.upstreams)
 	if err != nil {
 		return routeDecision{}, err
 	}
@@ -249,7 +284,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 // scoreRoute: C3 evaluate + C4 match + C5 select. Reads no Gateway state —
 // safe to call from the request path (under g.mu) or a background goroutine
 // (with snapshots).
-func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry) (upstream, modelID, taskCode string, err error) {
+func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry, upstreams map[string]Upstream) (upstream, modelID, taskCode string, err error) {
 	// C3: Jev Choice over task types
 	criteria := map[string]string{}
 	for _, t := range SeedTaskTypes {
@@ -269,6 +304,16 @@ func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, regis
 
 	// C4 + C5: match + select
 	surv := Match(taskCode, registry)
+	// keep only models whose upstream is actually configured — otherwise C5
+	// cold-start (cheapest-first) picks e.g. deepseek in a single-upstream
+	// deployment and the whole decision is discarded downstream.
+	configured := surv[:0]
+	for _, m := range surv {
+		if _, ok := upstreams[m.Upstream]; ok {
+			configured = append(configured, m)
+		}
+	}
+	surv = configured
 	chosen, err := Select(surv, taskCode, nil)
 	if err != nil {
 		return "", "", "", fmt.Errorf("select: %w", err)
@@ -316,7 +361,7 @@ func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
 		// background ctx: must outlive the request that spawned it (77s+ CPU score)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		upName, modelID, taskCode, err := scoreRoute(ctx, engine, state, registry)
+		upName, modelID, taskCode, err := scoreRoute(ctx, engine, state, registry, upstreams)
 		if err != nil {
 			log.Printf("[route-async] background score failed: %v", err)
 			return
@@ -330,12 +375,17 @@ func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
 	}()
 }
 
-// defaultUpstream returns the first configured upstream (hint-only fallback).
+// defaultUpstream returns a deterministic fallback (hint-only / pre-backfill
+// window): the lexicographically-first configured upstream — NOT map order,
+// which would route the blind window to a random upstream.
 func (g *Gateway) defaultUpstream() Upstream {
-	for _, u := range g.upstreams {
-		return u
+	best := ""
+	for name := range g.upstreams {
+		if best == "" || name < best {
+			best = name
+		}
 	}
-	return Upstream{}
+	return g.upstreams[best]
 }
 
 // sessionKey: derive a session key from the message history.
