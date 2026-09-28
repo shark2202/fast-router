@@ -132,7 +132,62 @@ type MeasuredReport struct {
 	EmptyLayers []string       `json:"empty_layers"` // seed types never routed (C9)
 }
 
-// Measured aggregates recorded verdicts into the measured matrix.
+// Calibrated converts recorded verdicts into the Select() measured format
+// (L1 self-evolution). Gates: minimum 5 usable samples per (task, model);
+// connect_error excluded — the model is not at fault when the upstream is
+// unreachable.
+func (s *VerdictStore) Calibrated() map[string]map[string]MeasuredEntry {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	type acc struct{ ok, err int }
+	cells := map[string]map[string]*acc{}
+	for _, e := range s.events {
+		if e.TaskCode == "" {
+			continue
+		}
+		if e.Outcome != "ok" && e.Outcome != "upstream_error" {
+			continue // connect_error: not the model's fault
+		}
+		m := cells[e.TaskCode]
+		if m == nil {
+			m = map[string]*acc{}
+			cells[e.TaskCode] = m
+		}
+		a := m[e.ModelID]
+		if a == nil {
+			a = &acc{}
+			m[e.ModelID] = a
+		}
+		if e.Outcome == "ok" {
+			a.ok++
+		} else {
+			a.err++
+		}
+	}
+	out := map[string]map[string]MeasuredEntry{}
+	for task, models := range cells {
+		tm := map[string]MeasuredEntry{}
+		for model, a := range models {
+			n := a.ok + a.err
+			if n < calibratedMinSamples {
+				continue // below the gate: cold-start (cost-based) still applies
+			}
+			tm[model] = MeasuredEntry{PassRate: float64(a.ok) / float64(n), SampleSize: n, Status: "active"}
+		}
+		if len(tm) > 0 {
+			out[task] = tm
+		}
+	}
+	return out
+}
+
+// calibratedMinSamples: minimum usable verdicts before a (task, model) cell
+// influences selection. Below it the cold-start cheapest-first path applies.
+const calibratedMinSamples = 5
+
 func (s *VerdictStore) Measured() MeasuredReport {
 	rep := MeasuredReport{TaskCounts: map[string]int{}}
 	if s == nil {

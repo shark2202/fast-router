@@ -222,16 +222,11 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		}
 	}
 
-	// hint-only mode (no scorer configured): skip Jev, use default upstream + client model.
-	if g.engine == nil {
-		return routeDecision{Upstream: g.defaultUpstream(), ModelID: modelHint, Session: sessionKey,
-			TaskTurn: taskTurn, Via: "hint"}, nil
-	}
-
-	// R5 async first-score: serve an informed route immediately, refine in the
-	// background (single-flight per session). Fast tier (small model) scores
-	// synchronously within a time budget; slow tier backfills/overwrites.
-	if g.asyncScore {
+	// R5 async first-score (needs at least one scoring tier): serve an informed
+	// route immediately, refine in the background (single-flight per session).
+	// Fast tier (small model) scores synchronously within a time budget and
+	// seeds the session cache; slow tier backfills/overwrites.
+	if g.asyncScore && (g.engine != nil || g.fastEngine != nil) {
 		state := lastUserText(messages, protocol)
 		if state == "" {
 			state = modelHint
@@ -242,21 +237,31 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 				budget = 10 * time.Second
 			}
 			fctx, fcancel := context.WithTimeout(ctx, budget)
-			upName, modelID, taskCode, ferr := scoreRoute(fctx, g.fastEngine, state, g.registry, g.upstreams)
+			upName, modelID, taskCode, ferr := scoreRoute(fctx, g.fastEngine, state, g.registry, g.upstreams, g.verdicts.Calibrated())
 			fcancel()
 			if ferr == nil {
 				if up, ok := g.upstreams[upName]; ok {
 					// seed the session cache with the fast route NOW so continuations
 					// inherit it instead of re-scoring; the slow tier overwrites later.
 					g.cacheRoute(sessionKey, upName, modelID, protocol, taskCode)
-					g.spawnScore(sessionKey, state, protocol) // slow tier refines
+					if g.engine != nil {
+						g.spawnScore(sessionKey, state, protocol) // slow tier refines
+					}
 					return routeDecision{Upstream: up, ModelID: modelID, Session: sessionKey,
 						TaskTurn: taskTurn, TaskCode: taskCode, Via: "fast"}, nil
 				}
 			}
 			// fast tier failed/timed out — hint fallback + slow spawn below
 		}
-		g.spawnScore(sessionKey, state, protocol)
+		if g.engine != nil {
+			g.spawnScore(sessionKey, state, protocol)
+		}
+		return routeDecision{Upstream: g.defaultUpstream(), ModelID: modelHint, Session: sessionKey,
+			TaskTurn: taskTurn, Via: "hint"}, nil
+	}
+
+	// hint-only mode (no scorer configured): skip Jev, use default upstream + client model.
+	if g.engine == nil {
 		return routeDecision{Upstream: g.defaultUpstream(), ModelID: modelHint, Session: sessionKey,
 			TaskTurn: taskTurn, Via: "hint"}, nil
 	}
@@ -267,7 +272,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		state = modelHint
 	}
 
-	upName, modelID, taskCode, err := scoreRoute(ctx, g.engine, state, g.registry, g.upstreams)
+	upName, modelID, taskCode, err := scoreRoute(ctx, g.engine, state, g.registry, g.upstreams, g.verdicts.Calibrated())
 	if err != nil {
 		return routeDecision{}, err
 	}
@@ -284,7 +289,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 // scoreRoute: C3 evaluate + C4 match + C5 select. Reads no Gateway state —
 // safe to call from the request path (under g.mu) or a background goroutine
 // (with snapshots).
-func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry, upstreams map[string]Upstream) (upstream, modelID, taskCode string, err error) {
+func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry, upstreams map[string]Upstream, measured map[string]map[string]MeasuredEntry) (upstream, modelID, taskCode string, err error) {
 	// C3: Jev Choice over task types
 	criteria := map[string]string{}
 	for _, t := range SeedTaskTypes {
@@ -314,7 +319,7 @@ func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, regis
 		}
 	}
 	surv = configured
-	chosen, err := Select(surv, taskCode, nil)
+	chosen, err := Select(surv, taskCode, measured)
 	if err != nil {
 		return "", "", "", fmt.Errorf("select: %w", err)
 	}
@@ -361,7 +366,7 @@ func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
 		// background ctx: must outlive the request that spawned it (77s+ CPU score)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		upName, modelID, taskCode, err := scoreRoute(ctx, engine, state, registry, upstreams)
+		upName, modelID, taskCode, err := scoreRoute(ctx, engine, state, registry, upstreams, g.verdicts.Calibrated())
 		if err != nil {
 			log.Printf("[route-async] background score failed: %v", err)
 			return
