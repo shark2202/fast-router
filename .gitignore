@@ -35,3 +35,11 @@ models/
 fast-router.json
 *.config.json
 !fast-router.example.json
+
+
+ai-native-theory/
+# runtime verdict data (regenerated per deployment)
+data/verdicts.jsonl
+# stray build artifacts (build with ./scripts or go build -o <dir>/)
+/yesnobench
+/zigbench
