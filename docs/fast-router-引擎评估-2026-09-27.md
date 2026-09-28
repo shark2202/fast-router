@@ -144,3 +144,24 @@ timestamp: 2026-09-27
 4. 与 R1（jev-rs）的关系：R1 保留任意 GGUF（P1 理论不变）但 P2 不降；R3 反之（P2 根除但 P1 重验）。二者是**正交的对照实验**，不互斥。
 
 **修正后的裁决**：R3 spike 优先级上调为与 R1 并列的对照线①.5——前提是本机源码构建可行；若用户实际部署设备是 Apple Silicon（arm64 CoreML 有官方二进制），R3 直接升为首选实验。
+
+## 附 2：R3 spike 实测结果（2026-09-28，终局）
+
+**问题：laya 毫秒级路线能否通过 P1 闸门？——答案：不能。**
+
+| 指标 | 实测 | 对照（Ornith-9B native） |
+|---|---|---|
+| P1（30 样本，同集同 criteria 信息） | **56.7% (17/30)** | 73.3% (22/30) |
+| 单问延迟（本机 CPU fp32） | ~1.5-2s（加载 ~7s） | 38.6s |
+| 官方延迟（T4 GPU） | 33ms/问、7.2ms/问批量 | 不适用（无 GPU 路径） |
+
+实验配置：laya.cpp 源码构建（CPU/ggml，LAYA_CUDA/VULKAN/COREML=OFF），multilingual checkpoint（644MB safetensors，modelscope 镜像绕过 HF 封锁），criteria 以 map 形式给足与 Ornith 相同的 code→描述信息，单次前向 choice。
+
+**Miss 模式**：13 个 miss 集中在细粒度类（E 结构化抽取↔F 创作↔H 工具代理↔I 简单问答互相混淆）——322M 编码器缺乏 9B 对 agent 任务粒度的语义分辨力。
+
+**裁决（终局）**：
+1. R3 闸门判定 **P1 不达标**（56.7% < 70%）——速度优势（快 20 倍@CPU / 千倍@GPU）无法补偿任务分辨力缺口。laya 保持 watchlist，不升级。
+2. **R0 native（Ornith-9B）+ R5 异步架构维持最优组合**：P1=73.3% 且有效 P2<1s 已达成；R3 若未来出更大/agent 特化 checkpoint 可重测（重测成本已降至半天）。
+3. C-011（prompt 重构提 KV 复用）维持 candidate，优先级进一步下调。
+4. 边界：typed-decisions 变体（842MB，数字/typed 输出专精）未测——与中文 agent 路由任务不匹配，性价比不足；english 变体不含中文，不适用。
+5. 副产物：laya spike 环境保留在 /tmp/laya-spike（构建 + 模型），重启即失，可复建。
