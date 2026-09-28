@@ -1,6 +1,6 @@
 # HANDOFF — fast-router v1.0
 
-> **Next session focus**: complete real-upstream roundtrip (GLM key has no balance — code 1113; chain already verified: routing/forwarding/schema-conversion/verdict-capture all reached the real endpoint) + C8 LLM-scout/manual review on top of /api/measured + Windows on-device test + codex/claude code real agent integration. (R5 async + batch KV-reuse + template fix + C7 verdict loop + 9B revalidation all landed 2026-09-27.)
+> **Next session focus**: complete real-upstream roundtrip (GLM key has no balance — code 1113; chain already verified) + C8 LLM-scout/manual review on top of /api/measured + Windows on-device test + codex/claude code real agent integration. (R5 async + batch KV-reuse + template fix + C7 verdict loop + 9B revalidation (P1=73.3% unchanged, P2 38.6s) + laya spike (P1=56.7%, gate failed, watchlist) all landed 2026-09-27/28.)
 
 ---
 
