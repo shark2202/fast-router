@@ -4,7 +4,7 @@ title: fast-router 知识沉淀 v0.1 —— 5 阶端到端系统化落盘
 description: 按 book/基于ai-native的知识沉淀流程规范.md 的 5 阶端到端流程（产生→验证→沉淀→应用→升级），系统化沉淀 fast-router 项目从 Python POC 到 Go 生产版的全部经验。架构和引擎已固定（Go+purego+zig+llama.cpp+Jev API+路由链+schema+admin+打包），P1 依赖具体模型能力（不阻塞架构/引擎）。含 patterns 层（跨项目可复用经验）+ 回放层（DecisionRecord 校准）+ 注册表（成本四字段）。
 source: fast-router 全项目（13d9f31..317e329，17 commit）
 theory: book/基于ai-native的知识沉淀流程规范.md
-timestamp: 2026-09-25T20:00:00+08:00
+timestamp: 2026-09-28T18:00:00+08:00
 status: 知识沉淀 v0.1，架构/引擎固定，P1 待模型验证
 ---
 
@@ -536,3 +536,85 @@ Ornith-1.5-9B-Q4_K_M（5.78GB，modelscope）+ 修复后模板 + 批量 KV 复�
 | 批量 KV 复用后 9B P2 ~20s | 0.7 | 38.6s | 半命中 | yesnobench 样本 state 短（共享分数低），2.0x 恰为短态预期；~20s 需 agent 长上下文才成立 |
 
 Candidate 变更：C-010（9B 干净模板复测）→ **active**（73.3% 确认）。C-011（prompt 重构）保持 candidate，但现在预期收益下调：干净模板下 P1 已达标且 KV 复用已拿走短态 2x。
+
+## v0.7 增量更新（2026-09-28 离线六平台交叉构建 + macOS 包启动冒烟）
+
+> 本局沉淀的是发布工程知识，不把“能产出 ZIP”误写成“六个平台都能运行”。本局所有新结论先按 candidate 管理，待第二次独立复现或新鲜评审后再升级为 active。
+
+### 研究五要素
+
+| 要素 | 内容 |
+|---|---|
+| 来源 | `scripts/pack.sh`、`zig/build.zig`、`SOP/build.md`；本机 macOS x64 构建记录；llama.cpp b11175 本地归档 |
+| 方法 | 单一 macOS x64 主机分别构建 macOS/Linux/Windows 的 amd64/arm64 六个目标；在线下载与 `OFFLINE=1` 本地归档各跑一轮；对 macOS x64 ZIP 做解压、启动和 HTTP 冒烟 |
+| 发现 | 六个目标均能生成完整 ZIP；离线轮未触发 `curl`；macOS x64 包在 hint-only 模式启动并通过 `/api/config`、`/admin`、`/v1/models` |
+| 局限 | Linux/Windows 目标只有构建级与 ZIP 完整性证据，未在真实目标机加载动态库/模型；macOS 冒烟未加载 GGUF，因此不等于 Jev 推理链验收 |
+| 结论 | 原生目标机不是构建前提；目标依赖资产、ABI、libc/sysroot 和运行时验证才是发布闭环。当前只能声称“macOS x64 主机完成六平台构建 POC”，不能声称“六平台可用” |
+
+### 结论（三行）
+
+> ① 单一 macOS x64 主机已完成 macOS/Linux/Windows × amd64/arm64 六个 native ZIP 的交叉构建 POC。
+> ② `OFFLINE=1 + LLAMA_ARCHIVE_DIR` 可在不访问 GitHub/curl 的条件下完成同一六目标矩阵，构建输入从“网络状态”收敛为“本地归档集合”。
+> ③ 构建级、包级、运行级、模型级仍是四道门；目前只有 macOS x64 的 hint-only 运行级冒烟通过。
+
+### DecisionRecord 校准
+
+| 预测 | 事前置信度 | 实测 | 结果 | Surprise |
+|---|---:|---|---|---|
+| macOS x64 可直接产出六平台 native ZIP | 0.70 | 六目标全部生成 ZIP 且 `unzip -tqq` 通过 | 命中 | “交叉编译”实际依赖每个目标的完整库资产，不是只改 `-Dtarget` |
+| 不依赖 GitHub/curl 也可完成六目标构建 | 0.75 | 本地六份归档 + `OFFLINE=1` 全部成功，curl 守卫未触发 | 命中 | 离线能力必须是显式模式，不能靠“网络碰巧可用” |
+| Windows 目标可按现有 msvc 路径构建 | 0.65 | `windows-msvc` 在当前 Zig 环境缺 libc；改为 `windows-gnu`，由 DLL 导出生成 `.def`/`.lib` 后成功 | 翻车后修正 | target triple 与 Zig 安装的 libc 能力是硬约束 |
+| 生成 ZIP 后至少有一个包可启动 | 0.60 | macOS x64 hint-only 启动成功，三个 HTTP 入口通过 | 命中 | 启动冒烟仍未覆盖 GGUF、native scorer 和其他五个平台 |
+
+**本局 POC Surprise Rate：1/4 直接翻车，另有 2 个目标依赖发现通过修正收敛；不能把这轮视为低风险发布验证。**
+
+### 新增 patterns（candidate）
+
+| ID | pattern | 内容 | 适用边界 | 负例 |
+|---|---|---|---|---|
+| P-018 | 目标依赖闭包 | 交叉构建的最小单位不是编译器，而是“target triple + libc/ABI + wrapper + llama + ggml CPU 库 + 打包布局”的完整依赖闭包 | 多平台 native 发布 | 只有 Go `GOOS/GOARCH` 产物、没有 native 库时 |
+| P-019 | 离线构建为一等路径 | 用稳定归档名、版本化本地缓存、`OFFLINE=1` 硬失败和 curl 守卫把网络从构建必需项降为可选项 | 发布、复现、受限网络环境 | 仅把下载失败后静默跳过的“半离线”脚本 |
+| P-020 | Windows GNU 导入库生成 | 对 DLL 导出先生成 `.def`，再用 `dlltool` 生成 `.lib`，解决 `windows-gnu` 链接所需的 import library | Zig GNU Windows 目标 | 假定 MSVC `.lib` 与 GNU import lib 可互换 |
+| P-021 | 发布证据分层 | 分别记录构建、ZIP 完整性、进程启动、native 库加载、模型推理；后一层不能由前一层替代 | 所有发布矩阵 | 以“ZIP 已生成”标记平台可用 |
+
+### 新增教训
+
+| ID | 教训 | 机理 | 对策 |
+|---|---|---|---|
+| L-018 | Zig 支持交叉编译 ≠ 当前目标可构建 | target、libc、sysroot 和第三方库 ABI 共同决定链接是否成立 | 先做目标依赖矩阵，再选 target triple；失败时记录具体缺口 |
+| L-019 | 逻辑相同的 CPU 库不代表文件名相同 | Linux x64/arm64、Windows x64/arm64 的 ggml CPU 库命名和布局不同 | 把归档内真实文件名纳入 manifest/映射，不用猜测式 glob |
+| L-020 | ZIP 完整性不等于运行时可用 | 动态库加载、符号解析、模型路径和平台 loader 直到启动才暴露 | 每个平台至少安排启动冒烟；模型级验证单独记账 |
+| L-021 | 网络下载会污染可复现性 | 同一脚本可能因 nightly 变更、网络和镜像状态得到不同输入 | 锁定归档版本并支持本地缓存；离线轮必须验证“未访问网络” |
+
+### 新增/更新 candidate
+
+| ID | 经验 | 状态 | 解除条件 |
+|---|---|---|---|
+| C-012 | 六平台 runtime 验证可由目标机/CI 矩阵补齐 | candidate | 六目标分别完成 native 库加载与最小 API/模型 smoke |
+| C-013 | 完全离线发布可升级为正式 release gate | candidate | 第二次独立离线复现 + 归档 SHA-256/manifest/SBOM 或签名流程 |
+| C-014 | Windows GNU import-lib 自动生成可长期保留 | candidate | Windows x64/arm64 真机或 CI 完成启动和 DLL 解析验证 |
+
+### 更新注册表
+
+| 字段 | v0.6 | v0.7 |
+|---|---|---|
+| 耗时 | ~3 天 | ~3.5 天（加六平台交叉构建、离线构建和启动冒烟） |
+| 缓存复用构件数 | 9 | 10（加目标归档缓存与 Windows import-lib 生成链） |
+| 新固化数 | 17 patterns + 17 教训 | **21 patterns + 21 教训**（+P-018/019/020/021，+L-018/019/020/021；新项仍为 candidate） |
+| Surprise Rate | 实验局 80%（4/5） | 构建局 1/4 直接翻车，另有目标依赖修正 |
+
+### T10 行为改变（v0.7）
+
+- ✅ 下次说“支持多平台”时拆成 Go 交叉编译、native ZIP 构建、目标机运行、模型推理四层，不再合并表述。
+- ✅ 发布构建优先使用锁定版本的本地归档；网络下载只作为准备缓存的步骤。
+- ✅ 每新增目标先补齐 target 依赖闭包和真实文件名映射，再运行打包脚本。
+- ✅ 发布前至少保留一个真实启动冒烟；没有模型验证就明确写 `hint-only`。
+- ✅ 新 POC 先进入 candidate，不因一次成功运行直接升级为 active。
+
+### v0.7 溯源
+
+- 构建脚本：`scripts/pack.sh`、`zig/build.zig`
+- 操作规范：`SOP/build.md`
+- 评估记录：`docs/fast-router-技术栈评估-zig-go-cpp.md` §VII–§IX
+- Wiki 同步：`WIKI/build-and-test.md`、`WIKI/implementation-status.md`、`WIKI/log.md`
+- 理论流程：`ai-native-theory/specs/基于ai-native的知识沉淀流程规范.md`

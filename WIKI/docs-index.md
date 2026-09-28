@@ -3,7 +3,7 @@ type: Documentation Index
 title: fast-router 现有文档索引
 description: docs、book、data 和 SOP 知识资产的分类导航。
 tags: [docs, knowledge, references]
-timestamp: 2026-09-26T18:00:00+08:00
+timestamp: 2026-09-28T18:00:00+08:00
 ---
 
 # 现有文档索引
@@ -20,7 +20,7 @@ timestamp: 2026-09-26T18:00:00+08:00
 * [Go 重写进展](../docs/fast-router-Go重写进展-v0.1.md) - Go C2/C3/C4/C5 状态、Jev API 对齐和剩余工作。
 * [架构设计 v0.2](../docs/fast-router-架构设计-v0.2.md) - litellm/schema fact 校验后的目标架构。
 * [智能路由设计共识](../docs/fast-router-智能路由设计共识-v0.1.md) - 任务轮、Jev、挡死、选模和回流设计。
-* [知识沉淀 v0.1](../docs/fast-router-知识沉淀-v0.1.md) - book 5 阶端到端（含 v0.2-v0.4 增量）。
+* [知识沉淀 v0.1](../docs/fast-router-知识沉淀-v0.1.md) - AI-native 五阶段知识闭环（含 v0.2-v0.7 增量）。
 * [Python POC 进展](../docs/fast-router-POC进展-v0.1.md) - 早期模型准确率、延迟与边界记录。
 * [架构设计 v0.1](../docs/fast-router-架构设计-v0.1.md) - fact 校验前的草案，主要用于历史对照。
 

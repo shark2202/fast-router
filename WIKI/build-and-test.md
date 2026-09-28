@@ -3,7 +3,7 @@ type: Build and Test
 title: fast-router 构建与测试指南
 description: 从本地测试到六平台打包的操作路径，以及每一步的验证边界。
 tags: [build, test, release, operations, v1.0]
-timestamp: 2026-09-26T18:00:00+08:00
+timestamp: 2026-09-28T18:00:00+08:00
 ---
 
 # 构建与测试
@@ -13,9 +13,10 @@ timestamp: 2026-09-26T18:00:00+08:00
 | 工具 | SOP 要求 | 用途 |
 |---|---:|---|
 | Go | >= 1.25 | CGO_ENABLED=0 编译 Go |
-| Zig | >= 0.14 | 编译 `libfrwrapper` |
-| curl | 任意 | 下载 llama.cpp nightly |
+| Zig | 0.14.x | 编译 `libfrwrapper` 和目标平台 wrapper |
+| curl | 在线模式需要 | 下载 llama.cpp nightly；离线模式不需要 |
 | zip | 任意 | 生成分发包 |
+| tar/unzip/objdump | 任意 | 解包归档、检查 ZIP、生成 Windows 导出列表 |
 | Python | 非 Go 构建必需 | 模型下载路径可能调用 modelscope |
 
 ## 本地 Go 验证
@@ -36,7 +37,7 @@ zig version
 zig build -Doptimize=ReleaseFast -Dllama_dir=/path/to/llama-bins
 ```
 
-也可以按 `SOP/build.md` 使用 `zig build-lib`。完成标准是生成目标平台共享库，并能解析 `fr_load`、`fr_score`、`fr_free` 所需的 llama.cpp 依赖。
+完成标准是生成目标平台共享库，并能解析 `fr_load`、`fr_score`、`fr_free` 所需的 llama.cpp 依赖。目标平台构建通过 `zig build -Dtarget=...` 完成；Windows 当前使用 `windows-gnu`，并从 DLL 导出生成 GNU import library。
 
 ## 真实 scorer/benchmark
 
@@ -70,10 +71,19 @@ DYLD_LIBRARY_PATH=/path/to/llama-libs \
 ## 六平台打包
 
 ```bash
+# 在线准备/构建
 VERSION=0.1.0 LLAMA_VER=b11175 ./scripts/pack.sh
+
+# 使用已准备好的六份本地归档，禁止网络访问
+OFFLINE=1 \
+LLAMA_ARCHIVE_DIR=/path/to/llama-archives \
+PLATFORM_LIST='darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64' \
+./scripts/pack.sh
 ```
 
-脚本目标是 `darwin/{amd64,arm64}`、`linux/{amd64,arm64}`、`windows/{amd64,arm64}`。它会编译 Go、尝试编译 Zig、下载 llama.cpp nightly、组装 zip。任何一个目标的下载或 Zig 交叉编译失败，都可能留下不完整包；打包后必须逐包检查内容和启动。
+脚本目标是 `darwin/{amd64,arm64}`、`linux/{amd64,arm64}`、`windows/{amd64,arm64}`。单一 macOS x64 主机已完成六目标 ZIP 构建 POC，且离线模式已用本地归档复现；这只证明构建级和包级，不证明 Linux/Windows 运行级可用。脚本遇到缺失归档、工具、符号或链接错误会失败退出，不应继续发布残包。
+
+当前运行证据只有 macOS x64 hint-only ZIP：解压后启动并通过 `/api/config`、`/admin`、`/v1/models`；未加载 GGUF。六平台正式发布仍需逐目标 native 库加载、最小 API 和模型 smoke。
 
 ## 用户侧验收
 

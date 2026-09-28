@@ -3,12 +3,12 @@ type: Implementation Status
 title: fast-router 实现状态矩阵
 description: 区分当前代码、测试覆盖、真实依赖验证和规划能力，并标记 v1.0 交付后仍存在的边界。
 tags: [status, verification, gaps, v1.0]
-timestamp: 2026-09-26T18:00:00+08:00
+timestamp: 2026-09-28T18:00:00+08:00
 ---
 
 # 实现状态
 
-> **基线日期**：2026-09-26。fast-router v1.0 已交付（[交付报告](../docs/fast-router-交付报告-v1.0.md)）：
+> **基线日期**：2026-09-28。fast-router v1.0 已交付（[交付报告](../docs/fast-router-交付报告-v1.0.md)）：
 > hint-only 模式 P2<1s 端到端可用；Jev 智能路由 P1=73.3%（Ornith-1.5-9B + per-candidate yes/no + apply_chat_template）。
 > 本页状态矩阵反映 v1.0 后的真实代码与测试边界。
 
@@ -42,7 +42,7 @@ timestamp: 2026-09-26T18:00:00+08:00
 | benchmark（单 token） | `cmd/jevbench/main.go` | 入口存在，真实模型基准 | 当前基线已被 yes/no + apply_template 取代，保留作对照 |
 | benchmark（yes/no） | `cmd/yesnobench/main.go` | 入口存在，真实模型基准 | P1=73.3% 主验收路径 |
 | benchmark（FFI 调试） | `cmd/zigbench/main.go` | 入口存在 | 单样本 Zig/FFI 调试 |
-| 六平台交叉编译 | `scripts/pack.sh` + `SOP/build.md` | 脚本存在，6 平台 zip 生成 | zig + llama.cpp nightly + 各平台库下载可能失败；按 `SOP/build.md` 逐项验收 |
+| 六平台交叉编译 | `scripts/pack.sh` + `SOP/build.md` | **macOS x64 主机 POC：6 平台 ZIP 均生成；离线矩阵也通过** | 构建/ZIP 完整性已验；仅 macOS x64 hint-only 启动冒烟通过，Linux/Windows native 加载、模型推理仍未验收 |
 | 判据回流/校准（C7-C9） | 设计文档能力 | 未实现 | 无 verdict ledger 和独立统计复核闭环 |
 
 ## 自动化测试规模
@@ -65,4 +65,5 @@ Python POC 另有任务轮和 matcher/selector 测试。Go 是当前主线，Pyt
 
 * “C2/C3/C4/C5 完成”在项目进展文档中表示 Go 逻辑和接口完成；**对 C3 而言**已用真实 Ornith-1.5-9B GGUF 在 9B 量化模型上跑出 P1=73.3%，但 P2=77s（CPU）仍需 GPU/MLX 才实用。
 * "端到端验证"目前仅对 hint-only 模式 + schema 转换 + session 路由成立；Jev 智能路由的完整链路（upstream 透传 + Jev 决策 + 真实回写）仍是基准级验证，不是长链路生产验证。
+* 六平台交叉构建已进入“构建级 POC”状态，不得写成“六平台可用”；正式发布还需要每个目标的 native 库加载和模型级 smoke。
 * System One Engine seam 已实现 native + HTTP 两种 adapter，但外部 sidecar（jev-rs / Laya / llm2jev 等）尚未完成真实接入验收。

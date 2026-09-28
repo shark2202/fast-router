@@ -1,5 +1,13 @@
 # Wiki Update Log
 
+## 2026-09-28（离线六平台交叉构建 POC）
+
+* **Knowledge**: 将六平台交叉构建、离线本地归档和 macOS x64 启动冒烟沉淀为 `docs/fast-router-知识沉淀-v0.1.md` v0.7，按来源/方法/发现/局限/结论记录，并新增 P-018～P-021、L-018～L-021、C-012～C-014。
+* **Build**: 更新 [build-and-test.md](build-and-test.md)，明确 `OFFLINE=1 + LLAMA_ARCHIVE_DIR`、Windows GNU import library、构建级与运行级边界。
+* **Status**: 更新 [implementation-status.md](implementation-status.md)，把六平台状态校正为“macOS x64 主机构建 POC”，只把 macOS x64 hint-only 启动列为运行证据。
+* **Evidence**: 六个目标 ZIP 和离线六目标 ZIP 完整性检查通过；macOS x64 包通过 `/api/config`、`/admin`、`/v1/models`。Linux/Windows runtime、GGUF/native scorer 仍未验收。
+* **Boundary**: 本次只沉淀知识和同步 Wiki，未修改业务逻辑；新 POC 条目保持 candidate，需第二次独立复现或新鲜评审后升级。
+
 ## 2026-09-26（v1.0 交付后）
 
 * **Delivery**: 同步 fast-router v1.0 交付到 Wiki；架构/引擎/方法/模型四层全部锁定，hint-only P2<1s 端到端验证、Jev 智能路由 P1=73.3%（Ornith-1.5-9B + per-candidate yes/no + apply_chat_template）。

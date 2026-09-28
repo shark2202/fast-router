@@ -222,8 +222,8 @@ LLAMA_ARCHIVE_DIR=/path/to/local/llama-archives/b11175 \
 ```bash
 export ZIG_SYSROOT_LINUX_AMD64=/opt/sysroots/x86_64-linux-gnu
 export ZIG_SYSROOT_LINUX_ARM64=/opt/sysroots/aarch64-linux-gnu
-export ZIG_SYSROOT_WINDOWS_AMD64=/opt/sysroots/x86_64-windows-msvc
-export ZIG_SYSROOT_WINDOWS_ARM64=/opt/sysroots/aarch64-windows-msvc
+export ZIG_SYSROOT_WINDOWS_AMD64=/opt/sysroots/x86_64-windows-gnu
+export ZIG_SYSROOT_WINDOWS_ARM64=/opt/sysroots/aarch64-windows-gnu
 ```
 
 Windows 构建会从目标 DLL 自动生成 `llama.lib`、`ggml-base.lib` 和目标
