@@ -1,0 +1,29 @@
+{
+  "project": "fast-router",
+  "audit_mode": "release",
+  "date": "2026-09-26",
+  "reviewer": "OpenAI Codex",
+  "release_readiness_score": 3.0,
+  "recommendation": "not_ready_for_public_beta",
+  "findings": {
+    "critical": 1,
+    "high": 2,
+    "medium": 1,
+    "low": 0,
+    "info": 0,
+    "total": 4
+  },
+  "report": "docs/audit-report-fast-router-2026-09-26.md",
+  "verification": {
+    "go_test": "go test ./... passed",
+    "go_cross_build": [
+      "darwin/amd64",
+      "darwin/arm64",
+      "linux/amd64",
+      "linux/arm64",
+      "windows/amd64",
+      "windows/arm64"
+    ],
+    "full_pack": "not run; requires network downloads and writes release artifacts"
+  }
+}
