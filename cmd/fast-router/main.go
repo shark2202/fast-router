@@ -82,6 +82,7 @@ func main() {
 	}
 	gw.SetAsyncScore(cfg.AsyncScoreEnabled())
 	gw.SetVerdicts(router.NewVerdictStore("data/verdicts.jsonl"))
+	gw.SetTrainLog("data/train_log.jsonl")
 
 	admin := router.NewAdmin(cfg, cfgPath, gw)
 

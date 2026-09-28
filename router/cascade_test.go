@@ -6,7 +6,13 @@ package router
 //   slow tier — 9B, background (~38.6s), overwrites the session cache with
 //               the accurate route; continuations inherit it
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -152,5 +158,44 @@ func TestContinuationInheritsFastRouteBeforeSlowBackfill(t *testing.T) {
 	}
 	if n := fast.calls; n != 1 {
 		t.Fatalf("fast engine called %d times, want 1 (no re-score on continuation)", n)
+	}
+}
+
+func TestTrainLogCapturesBothTiers(t *testing.T) {
+	dir := t.TempDir()
+	tl := filepath.Join(dir, "train.jsonl")
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"x"}}]}`))
+	}))
+	defer up.Close()
+	slow := &slowEngine{delay: 50 * time.Millisecond}
+	gw := NewGateway(slow, SeedRegistry, map[string]Upstream{
+		"openai": {Name: "openai", BaseURL: up.URL, Protocol: "openai"},
+	})
+	gw.SetAsyncScore(true)
+	gw.SetFastEngine(&recordingEngine{
+		resp: System1Response{Model: "remote", Answers: map[string]Answer{
+			"task_type": {Type: "choice", Choice: "A", Confidence: 0.9},
+		}},
+	})
+	gw.SetTrainLog(tl)
+	postChat(t, gw, `{"model":"m","messages":[{"role":"user","content":"implement a function"}]}`)
+	waitFor(t, 2*time.Second, "slow tier", func() bool {
+		data, _ := os.ReadFile(tl)
+		return bytes.Count(data, []byte("\n")) >= 2
+	})
+	data, _ := os.ReadFile(tl)
+	var tiers []string
+	for _, line := range bytes.Split(bytes.TrimSpace(data), []byte("\n")) {
+		var s TrainSample
+		if json.Unmarshal(line, &s) == nil {
+			tiers = append(tiers, s.Tier)
+			if s.State != "implement a function" || s.TaskCode == "" {
+				t.Fatalf("sample = %+v", s)
+			}
+		}
+	}
+	if len(tiers) != 2 || tiers[0] != "fast" || tiers[1] != "slow" {
+		t.Fatalf("tiers = %v, want [fast slow]", tiers)
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -56,6 +57,9 @@ type Gateway struct {
 	// C7 verdict feedback: routing outcomes (nil = not configured, no-op)
 	verdicts *VerdictStore
 
+	// retraining loop: scorer evaluations for distillation (nil = not configured)
+	trainLog *trainLogger
+
 	// two-tier cascade: fast tier = small model, synchronous, gives the first
 	// request an informed route; slow tier (engine) refines in the background.
 	fastEngine SystemOneEngine
@@ -64,6 +68,9 @@ type Gateway struct {
 
 // SetVerdicts attaches the C7 verdict store (nil-safe when never called).
 func (g *Gateway) SetVerdicts(s *VerdictStore) { g.verdicts = s }
+
+// SetTrainLog attaches the scorer-evaluation logger (data/train_log.jsonl).
+func (g *Gateway) SetTrainLog(path string) { g.trainLog = newTrainLogger(path) }
 
 // Verdicts exposes the C7 store for the admin API.
 func (g *Gateway) Verdicts() *VerdictStore { return g.verdicts }
@@ -237,7 +244,8 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 				budget = 10 * time.Second
 			}
 			fctx, fcancel := context.WithTimeout(ctx, budget)
-			upName, modelID, taskCode, ferr := scoreRoute(fctx, g.fastEngine, state, g.registry, g.upstreams, g.verdicts.Calibrated())
+			upName, modelID, taskCode, fconf, ferr := scoreRoute(fctx, g.fastEngine, state, g.registry, g.upstreams, g.verdicts.Calibrated())
+			g.recordTrainSample("fast", sessionKey, state, taskCode, fconf)
 			fcancel()
 			if ferr == nil {
 				if up, ok := g.upstreams[upName]; ok {
@@ -277,7 +285,8 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		state = modelHint
 	}
 
-	upName, modelID, taskCode, err := scoreRoute(ctx, g.engine, state, g.registry, g.upstreams, g.verdicts.Calibrated())
+	upName, modelID, taskCode, sconf, err := scoreRoute(ctx, g.engine, state, g.registry, g.upstreams, g.verdicts.Calibrated())
+	g.recordTrainSample("slow", sessionKey, state, taskCode, sconf)
 	if err != nil {
 		return routeDecision{}, err
 	}
@@ -294,7 +303,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 // scoreRoute: C3 evaluate + C4 match + C5 select. Reads no Gateway state —
 // safe to call from the request path (under g.mu) or a background goroutine
 // (with snapshots).
-func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry, upstreams map[string]Upstream, measured map[string]map[string]MeasuredEntry) (upstream, modelID, taskCode string, err error) {
+func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry, upstreams map[string]Upstream, measured map[string]map[string]MeasuredEntry) (upstream, modelID, taskCode string, confidence float64, err error) {
 	// C3: Jev Choice over task types
 	criteria := map[string]string{}
 	for _, t := range SeedTaskTypes {
@@ -307,9 +316,10 @@ func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, regis
 		},
 	})
 	if err != nil {
-		return "", "", "", fmt.Errorf("jev score: %w", err)
+		return "", "", "", 0, fmt.Errorf("jev score: %w", err)
 	}
 	taskCode = resp.Answers["task_type"].Choice
+	confidence = resp.Answers["task_type"].Confidence
 	log.Printf("[route] jev chose task_type=%s (%s) confidence=%.3f", taskCode, ByCode[taskCode].Name, resp.Answers["task_type"].Confidence)
 
 	// C4 + C5: match + select
@@ -326,10 +336,10 @@ func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, regis
 	surv = configured
 	chosen, err := Select(surv, taskCode, measured)
 	if err != nil {
-		return "", "", "", fmt.Errorf("select: %w", err)
+		return "", "", "", 0, fmt.Errorf("select: %w", err)
 	}
 	log.Printf("[route] C4 blocked %d/%d, C5 selected %s (upstream=%s)", len(registry)-len(surv), len(registry), chosen.ModelID, chosen.Upstream)
-	return chosen.Upstream, chosen.ModelID, taskCode, nil
+	return chosen.Upstream, chosen.ModelID, taskCode, confidence, nil
 }
 
 // cacheRoute stores a scored route for the session (tool-loop inheritance).
@@ -371,7 +381,8 @@ func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
 		// background ctx: must outlive the request that spawned it (77s+ CPU score)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		upName, modelID, taskCode, err := scoreRoute(ctx, engine, state, registry, upstreams, g.verdicts.Calibrated())
+		upName, modelID, taskCode, aconf, err := scoreRoute(ctx, engine, state, registry, upstreams, g.verdicts.Calibrated())
+		g.recordTrainSample("slow", sessionKey, state, taskCode, aconf)
 		if err != nil {
 			log.Printf("[route-async] background score failed: %v", err)
 			return
@@ -604,4 +615,46 @@ func versionedBaseURL(base string) bool {
 		}
 	}
 	return false
+}
+
+// TrainSample: one scorer evaluation, captured for distillation retraining.
+// The slow tier's records are teacher labels (design ② of the self-training
+// loop); the fast tier's are the student's predictions for drift monitoring.
+type TrainSample struct {
+	TS         int64   `json:"ts"`
+	Session    string  `json:"session"`
+	Tier       string  `json:"tier"`      // "fast" | "slow"
+	State      string  `json:"state"`     // the scored user text
+	TaskCode   string  `json:"task_code"` // chosen category
+	Confidence float64 `json:"confidence"`
+}
+
+// trainLogger: append-only JSONL of scorer evaluations (data/train_log.jsonl).
+type trainLogger struct {
+	mu   sync.Mutex
+	path string
+}
+
+func newTrainLogger(path string) *trainLogger { return &trainLogger{path: path} }
+
+func (t *trainLogger) log(s TrainSample) {
+	if t == nil || t.path == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	f, err := os.OpenFile(t.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	json.NewEncoder(f).Encode(s)
+	f.Close()
+}
+
+// recordTrainSample captures a scorer evaluation for the retraining loop.
+func (g *Gateway) recordTrainSample(tier, session, state, taskCode string, conf float64) {
+	g.trainLog.log(TrainSample{
+		TS: time.Now().UnixMilli(), Session: session, Tier: tier,
+		State: state, TaskCode: taskCode, Confidence: conf,
+	})
 }
