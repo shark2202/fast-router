@@ -91,9 +91,16 @@ func yesnoBench(ext router.ExtendedBackend, states []string) {
 	if !canBatch {
 		log.Fatal("backend does not implement YesNoBatcher")
 	}
-	yesID, err := ext.GetTokenID("yes")
+	yesWord, noWord := "yes", "no"
+	yesID, err := ext.GetTokenID(yesWord)
 	if err != nil {
-		log.Fatalf("GetTokenID(yes): %v", err)
+		if id2, err2 := ext.GetTokenID("Yes"); err2 == nil {
+			yesWord, noWord, yesID = "Yes", "No", id2
+		} else if id3, err3 := ext.GetTokenID("是"); err3 == nil {
+			yesWord, noWord, yesID = "是", "否", id3
+		} else {
+			log.Fatalf("no single-token affirmation: %v", err)
+		}
 	}
 	criteria := map[string]string{}
 	for _, t := range router.SeedTaskTypes {
@@ -112,8 +119,8 @@ func yesnoBench(ext router.ExtendedBackend, states []string) {
 	for _, state := range states {
 		prompts := make([]string, len(opts))
 		for i, opt := range opts {
-			msgs := fmt.Sprintf(`[{"role":"user","content":"%s\nQuestion: Is this about \"%s\" (%s)? Answer yes or no."}]`,
-				strings.ReplaceAll(strings.ReplaceAll(state, "\\", "\\\\"), "\"", "\\\""), opt, criteria[opt])
+			msgs := fmt.Sprintf(`[{"role":"user","content":"%s\nQuestion: Is this about \"%s\" (%s)? Answer %s or %s."}]`,
+				strings.ReplaceAll(strings.ReplaceAll(state, "\\", "\\\\"), "\"", "\\\""), opt, criteria[opt], yesWord, noWord)
 			p, err := ext.ApplyChatTemplate(msgs, true)
 			if err != nil {
 				log.Fatalf("ApplyChatTemplate: %v", err)

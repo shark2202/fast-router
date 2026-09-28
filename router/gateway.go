@@ -252,6 +252,11 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 				}
 			}
 			// fast tier failed/timed out — hint fallback + slow spawn below
+			if ferr != nil {
+				log.Printf("[route-fast] fast tier failed (%v) — falling back to hint", ferr)
+			} else {
+				log.Printf("[route-fast] fast tier chose unconfigured upstream %q — falling back to hint", upName)
+			}
 		}
 		if g.engine != nil {
 			g.spawnScore(sessionKey, state, protocol)
