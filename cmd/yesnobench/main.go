@@ -5,8 +5,9 @@
 // task type), forward each, extract "yes" logit, softmax → choice.
 //
 // Usage:
-//   DYLD_LIBRARY_PATH=~/.local/share/llama-bins/llama-b11175 \
-//   go run ./cmd/yesnobench <gguf-model-path>
+//
+//	DYLD_LIBRARY_PATH=~/.local/share/llama-bins/llama-b11175 \
+//	go run ./cmd/yesnobench <gguf-model-path>
 package main
 
 import (
@@ -33,12 +34,20 @@ func main() {
 	// Use as ExtendedBackend (zigBackend implements it)
 	var extBackend router.ExtendedBackend = backend
 
-	// Get "yes" token id
-	yesID, err := backend.GetTokenID("yes")
+	// Get the affirmation token id: yes -> Yes -> 是 (Chinese-heavy vocabs
+	// like minimind tokenize lowercase "yes" into multiple tokens)
+	yesWord, noWord := "yes", "no"
+	yesID, err := backend.GetTokenID(yesWord)
 	if err != nil {
-		log.Fatalf("get 'yes' token id: %v", err)
+		if id2, err2 := backend.GetTokenID("Yes"); err2 == nil {
+			yesWord, noWord, yesID = "Yes", "No", id2
+		} else if id3, err3 := backend.GetTokenID("是"); err3 == nil {
+			yesWord, noWord, yesID = "是", "否", id3
+		} else {
+			log.Fatalf("no single-token affirmation (yes/Yes/是): %v", err)
+		}
 	}
-	fmt.Fprintf(os.Stderr, "'yes' token id: %d\n", yesID)
+	fmt.Fprintf(os.Stderr, "affirmation: %s (token %d)\n", yesWord, yesID)
 
 	// Check if backend supports apply_chat_template
 	var hasTemplate bool
@@ -87,8 +96,8 @@ func main() {
 			} else {
 				// Fallback: hardcoded Qwen2.5 template
 				prompt = fmt.Sprintf(
-					"<|im_start|>user\n%s\nQuestion: Is this request about \"%s\" (%s)? Answer yes or no.\n<|im_end|>\n<|im_start|>assistant\n",
-					s.Message, c.name, c.desc)
+					"<|im_start|>user\n%s\nQuestion: Is this request about \"%s\" (%s)? Answer %s or %s.\n<|im_end|>\n<|im_start|>assistant\n",
+					s.Message, c.name, c.desc, yesWord, noWord)
 			}
 			prompts[i] = prompt
 		}

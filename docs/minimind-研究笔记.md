@@ -65,3 +65,31 @@ timestamp: 2026-09-28
 ## 六、结论
 
 **minimind 把"自训练一个 fast-router 专属小模型"的成本打到了"租卡几分钟 + 一份数据集"的量级**，且产出物无缝落回现有进程内推理链路。L4 从研究远景升格为可执行实验，前置依赖是数据积累（C7 verdicts）与一次 30 样本 P1 验证。建议排序：verdict 数据积累（自动进行中）→ 64M 蒸馏 spike（半天）→ 视 P1 决定是否替换 fast tier。
+
+## 附录：64M 地板 Spike 实测（2026-09-28）
+
+**管线验证（全部打通，端到端 ~1 小时）**：
+
+```
+full_sft_768.pth (137MB, modelscope)
+  → convert_model.py 路径: 权重载入 Qwen3ForCausalLM(strict=True, 0 缺失)
+  → save_pretrained fp16 (127.8MB safetensors, 真 Qwen3 架构)
+  → llama.cpp convert_hf_to_gguf（补丁: get_vocab_base_pre 回退 qwen2）
+  → /tmp/minimind-3.gguf (128MB f16)
+  → yesnobench（进程内 zig backend）
+```
+
+**实测数据**：
+
+| 指标 | minimind-3 64M | 对照（Ornith-9B） | 对照（Qwen0.5B） |
+|---|---|---|---|
+| P1（zero-shot） | **10% (3/30) = 随机** | 73.3% | 23.3% |
+| P2/样本（10 前向） | **1.09s** | 38.6s | ~4s |
+| 单前向 | ~110ms | ~3.9s | ~400ms |
+
+**过程修复（已入库）**：minimind 中文向词表里 "yes" 非单 token——scorer 与 yesnobench 增加肯定词回退链（yes→Yes→是，prompt 同步用词，探针实测 Yes=3376 / 是=357 均单 token）。
+
+**结论**：
+1. zero-shot 地板 = 随机 → **蒸馏训练是硬前提**（L4 蓝图的"训练后预期 ≥23.3%"中，"训练后"三字是全部重量所在）。
+2. 速度地板优秀：64M 单前向 110ms，蒸馏后做 fast tier 首评预计 <1.1s（0.5B 的 1/3.5），batch KV 后更低。
+3. 下一步（L4 蒸馏训练 spike）：合成训练集（10 类 × 模板扩充 + 可选 9B 教师标注）→ CPU SFT（63.9M × 万级短样本，预计小时级）→ 复测 P1。训练代码全部现成（minimind repo train_model.py）。

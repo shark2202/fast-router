@@ -1,8 +1,9 @@
 // Package router: C3 — Jev system-one scorer (Choice type), backend-agnostic.
 //
 // Follows the Jev system-one API format (https://docs.typesafe.ai/api):
-//   POST /v1/system1 {state, model, questions:{id:{type,instructions,criteria}}}
-//   -> {model, answers:{id:{choice, probabilities, confidence}}, usage}
+//
+//	POST /v1/system1 {state, model, questions:{id:{type,instructions,criteria}}}
+//	-> {model, answers:{id:{choice, probabilities, confidence}}, usage}
 //
 // This file = pure-Go API surface (structs + Choice logic):
 // candidate code labels, criteria→candidate mapping, softmax over logits.
@@ -36,7 +37,7 @@ type Question struct {
 type System1Response struct {
 	Model   string            `json:"model"`
 	Answers map[string]Answer `json:"answers"`
-	Usage   Usage            `json:"usage"`
+	Usage   Usage             `json:"usage"`
 }
 
 type Usage struct {
@@ -47,9 +48,9 @@ type Usage struct {
 // Answer: the choice variant (router uses Choice for task-type routing).
 type Answer struct {
 	Type          string             `json:"type"`          // "choice"
-	Choice        string             `json:"choice"`         // highest-probability option
-	Probabilities map[string]float64 `json:"probabilities"`  // {option: prob}, sum=1
-	Confidence    float64            `json:"confidence"`     // 0-1, derived from distribution
+	Choice        string             `json:"choice"`        // highest-probability option
+	Probabilities map[string]float64 `json:"probabilities"` // {option: prob}, sum=1
+	Confidence    float64            `json:"confidence"`    // 0-1, derived from distribution
 }
 
 // --- Backend: pluggable inference (local zig+libllama, or cloud Jev API) ---
@@ -134,8 +135,8 @@ func (s *Scorer) scoreChoice(state string, q Question) (Answer, int, int, error)
 	if len(q.Criteria) > 255 {
 		return Answer{}, 0, 0, errors.New("choice criteria exceeds 255 options (Jev limit)")
 	}
-	options := orderedOptions(q.Criteria)            // deterministic option order
-	codes := candidateCodeLabels(len(options))        // A, B, ..., Z, AA, ...
+	options := orderedOptions(q.Criteria)      // deterministic option order
+	codes := candidateCodeLabels(len(options)) // A, B, ..., Z, AA, ...
 	prompt := buildChoicePrompt(q.Instructions, options, codes, q.Criteria, state)
 	logits, usage, err := s.backend.ChoiceScore(prompt, codes)
 	if err != nil {
@@ -254,18 +255,29 @@ func (s *Scorer) scoreChoiceYesNo(state string, q Question) (Answer, int, int, e
 	if !ok {
 		return s.scoreChoice(state, q)
 	}
-	// Get "yes" token id
-yesID, err := ext.GetTokenID("yes")
+	// Resolve the affirmation token: prefer "yes", fall back to "Yes" then
+	// "是" (Chinese-heavy vocabs like minimind tokenize lowercase "yes" into
+	// multiple tokens). The prompt uses the same word so the model actually
+	// emits the scored token.
+	yesWord := "yes"
+	noWord := "no"
+	yesID, err := ext.GetTokenID(yesWord)
 	if err != nil {
-		return Answer{}, 0, 0, fmt.Errorf("get yes token: %w", err)
+		if id2, err2 := ext.GetTokenID("Yes"); err2 == nil {
+			yesWord, yesID = "Yes", id2
+		} else if id3, err3 := ext.GetTokenID("是"); err3 == nil {
+			yesWord, noWord, yesID = "是", "否", id3
+		} else {
+			return Answer{}, 0, 0, fmt.Errorf("no single-token affirmation found (yes/Yes/是): %w", err)
+		}
 	}
 	// Build per-candidate prompts with chat template
 	options := orderedOptions(q.Criteria)
 	prompts := make([]string, len(options))
 	for i, opt := range options {
 		rubric := q.Criteria[opt]
-		msgs := fmt.Sprintf(`[{"role":"user","content":"%s\nQuestion: Is this about \"%s\" (%s)? Answer yes or no."}]`,
-			escapeJSON(state), escapeJSON(opt), escapeJSON(rubric))
+		msgs := fmt.Sprintf(`[{"role":"user","content":"%s\nQuestion: Is this about \"%s\" (%s)? Answer %s or %s."}]`,
+			escapeJSON(state), escapeJSON(opt), escapeJSON(rubric), yesWord, noWord)
 		prompt, err := ext.ApplyChatTemplate(msgs, true)
 		if err != nil {
 			return Answer{}, 0, 0, fmt.Errorf("apply template: %w", err)
