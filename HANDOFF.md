@@ -25,7 +25,7 @@ A local-first LLM smart router gateway. Clients (codex/claude code/pi-agent) sen
 | Artifact | Path |
 |---|---|
 | Delivery report | `docs/fast-router-交付报告-v1.0.md` |
-| Knowledge sedimentation (v0.1+v0.2+v0.3+v0.4+v0.5) | `docs/fast-router-知识沉淀-v0.1.md` |
+| Knowledge sedimentation (v0.1–v0.7) | `docs/fast-router-知识沉淀-v0.1.md` |
 | Tech-stack evaluation (zig+go+cpp) | `docs/fast-router-技术栈评估-zig-go-cpp.md` |
 | Engine evaluation (native/jev-rs/laya.cpp/lev) | `docs/fast-router-引擎评估-2026-09-27.md` |
 | Self-evolution feasibility (L1-L4) | `docs/fast-router-自进化评估-2026-09-28.md` |

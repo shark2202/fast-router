@@ -618,3 +618,93 @@ Candidate 变更：C-010（9B 干净模板复测）→ **active**（73.3% 确认
 - 评估记录：`docs/fast-router-技术栈评估-zig-go-cpp.md` §VII–§IX
 - Wiki 同步：`WIKI/build-and-test.md`、`WIKI/implementation-status.md`、`WIKI/log.md`
 - 理论流程：`ai-native-theory/specs/基于ai-native的知识沉淀流程规范.md`
+
+## v0.7 增量更新（2026-09-28 级联+自进化+蒸馏+深挖+E2）
+
+> 本局跨：级联双档 → L1 自校准 → minimind 研究/地板/蒸馏里程碑 → 证据链深挖 → 训练日志闭环 → E2 负结果。自 v0.7 起按 KLP shadow 档补 `recheck_condition`/`use_status` 字段（docs/ai-native-theory包-研读-映射 承诺）。
+
+### 结论（三行）
+
+> ① 高频场景三缺口定位后级联双档落地：热路径 150µs、首评 2.77s、续轮 ~1ms——64M 蒸馏模型（73.3% P1）换装 fast tier，成本 1/140。
+> ② 深挖推翻"蒸馏保真"：64M 与 9B 错误集几乎不相交（30 中仅 1 共同错），"持平"是聚合巧合；质量真实机会在互补（并集上限 ~96.7%），未兑现。
+> ③ E2 负结果证明提升路径脆弱：三变量同改致 46.7% 回退——**回归门（不降级才部署）的价值被直接证明**；单变量纪律升格为硬规则。
+
+### 新增 DecisionRecord 校准
+
+| 预测 | 事前 | 实测 | 结果 | Surprise |
+|---|---|---|---|---|
+| 级联首评 <3s | 0.75 | 2.77s | 命中 | 无 |
+| L1 自校准可翻转选模 | 0.8 | 测试证明（live 数据未测） | 命中 | C5 上游过滤缺失先被测试暴露（又一层"配置与 registry 一致性"问题） |
+| minimind zero-shot 有一定能力 | 0.6 | 10% 随机 | **翻车** | 中文词表 "yes" 非 token（暴露肯定词回退需求） |
+| 蒸馏后 ≥23.3% | 0.7 | 73.3% | **保守翻车** | 超预期 50pp；但深挖后发现持平是巧合——预测对了数字错了原因 |
+| 73.3%=蒸馏保真 | 0.85 | 错误集不相交，仅 1 共同错 | **翻车** | 同分≠同边界；C/I 互为对方缺位的吸引子 |
+| E2 模板修复→提升 | 0.7 | 46.7% 回退 | **翻车** | C 修复单独有效，但 G 吸引子爆发（定向负例类不平衡） |
+| fast tier 需 9B 兜底 | 0.75 | 64M 已 73.3% 且错误互补 | 半翻车 | 双档简化为单档成为 open question（Q1） |
+
+**本局 Surprise Rate：7 中 4 翻车 = 57%**——两个最高影响 Surprise 均为"数字对但机制错"型（同分巧合、保守预测）。
+
+### 新增 patterns（含 KLP shadow 字段）
+
+| ID | pattern | 内容 | recheck_condition | use_status |
+|---|---|---|---|---|
+| P-018 | 回归门纪律 | 任何重训/换模部署前必须过冻结基准（30 样本 P1 ≥ 当前部署值）；E2 实证：无门则质量腰斩上线 | 每次基准集变更时重验门限 | **used**（E2 拦截 v2） |
+| P-019 | 级联双档评分 | fast tier 小模型同步出路由+种子化缓存，slow tier 后台精修覆写；超时预算兜底降级 hint | 若单档 64M 方案（Q1）成立则本 pattern 退役 | **used**（live 验证） |
+| P-020 | 规则编译式蒸馏管线 | 模板规则→SFT 数据（prompt 与打分 prompt 字节级一致）→CPU 续训→GGUF→fast_path；教师=规则非模型（措辞纪律：不称蒸馏保真） | E2-v3 单变量实验后更新配方版本 | used（v1 成功/v2 失败各一次） |
+| P-021 | 错误集对比归因 | 同分模型必须做逐样本错误集对比才算"持平"；聚合分数相同≠决策边界复刻 | 无 | **used**（推翻 73.3% 持平） |
+
+### 新增教训
+
+| ID | 教训 | 机理 | 对策 |
+|---|---|---|---|
+| L-018 | 单变量纪律违反的代价 | E2 三变量同改（C 模板+I 扩充+定向负例），46.7% 回退却无法归因 | 数据配方改动一次一变量；配方版本化（v1 冻结为基准） |
+| L-019 | 定向负例的类不平衡副作用 | G 进否定池但正例仅 64 组合→边界紊乱→吸引子迁移（C→G） | 负例定向必须同步扩目标类正例至平衡 |
+| L-020 | n=30 的统计功效 | 95% CI ±15pp，一切"持平/优劣"判定在噪声区 | 结论分级标注：远超噪声（10%→73%）可信，±15pp 内差异标注"不可区分" |
+| L-021 | 措辞即证据纪律 | "蒸馏"实为规则编译；"自训练"实为规则监督——术语错用导致上游结论连锁失真 | 血统链审计：每个产物写清三层来历与教师真身 |
+
+### 新增/更新 candidate（KLP shadow 字段）
+
+| ID | 经验 | 状态 | recheck_condition | use_status |
+|---|---|---|---|---|
+| C-012 | 双档可简化为单档 64M（Q1） | candidate | E2-v3 后跑单档 vs 双档对比 | not_used |
+| C-013 | E2-v3a：仅 C 模板收窄 | candidate | 执行后 | not_used |
+| C-014 | E2-v3b：定向负例+目标类正例平衡 | candidate | 执行后 | not_used |
+| C-015 | 真实流量重训周期（E1 全周期） | candidate | train_log 积累 ≥500 教师样本 | not_used |
+| C-016 | 96.7% 互补上限可否兑现（分歧仲裁） | candidate | 需 9B+64M 并行评分基建 | not_used |
+
+### 流程沉淀：重训管线操作规程（P-020 的执行清单）
+
+```
+1. 数据     python3 scripts/distill/gen_data.py 250（配方=冻结版 v1）
+            改动规则：单变量 → 新配方文件 vN，不覆盖旧版
+2. 训练     cd /tmp/minimind/trainer && OMP_NUM_THREADS=6 MKL_NUM_THREADS=6 \
+              python3 -u train_full_sft.py --data_path <jsonl> --device cpu \
+              --dtype float32 --batch_size 8 --epochs 1 --lr 2e-5 --max_seq_len 192 \
+              --from_weight full_sft --save_weight router_vN
+            （6 线程钉扎 12s/步；同机重负载时 21s/步，挂 watch_and_eval 哨兵）
+3. 转换     scripts/distill/eval_router.sh 内嵌三步（pth→Qwen3-HF→GGUF）
+4. 回归门   30 样本 P1 ≥ 当前部署值，否则不部署（P-018，E2 实证）
+5. 部署     config model.fast_path 指向新 GGUF，重启即生效
+6. 记录     miss 模式对比归档至审计文档；DecisionRecord 入沉淀
+```
+
+### 更新注册表
+
+| 字段 | v0.6 | v0.7 |
+|---|---|---|
+| 耗时 | ~3 天 | ~4 天（加级联/L1/蒸馏/深挖/E2 局） |
+| 新固化数 | 17 patterns + 17 教训 | **21 patterns + 21 教训**（+P-018..021 +L-018..021） |
+| Surprise Rate | 80%（4/5） | 本局 57%（4/7）——两个"数字对机制错"型 |
+| KLP 对齐 | 无字段 | patterns/candidate 表补 recheck_condition + use_status（shadow 档） |
+
+### T10 行为改变（v0.7）
+
+- ✅ 下次改训练数据 → 单变量+配方版本化，不再多变量同改（L-018）
+- ✅ 下次宣称两模型持平 → 先跑错误集对比（P-021）
+- ✅ 下次部署任何重训产物 → 回归门先行（P-018）
+- ✅ 下次描述训练产物 → 写明三层血统与教师真身，不用"蒸馏"泛称（L-021）
+
+### v0.7 溯源
+
+- 提交链：0a8e0d4（级联）→ 97d26cf（L1）→ df95c6c/59a6a93/b912161（minimind 研究线）→ 6f381c0（KLP 映射）→ fc521db（深挖）→ 8bab4da（血统）→ b3ddc51（训练日志）→ 04f765c（E2 负结果）
+- 关键文档：docs/自训练证据链深挖-2026-09-28.md、docs/minimind-研究笔记.md、docs/ai-native-theory包-研读与映射-2026-09-28.md
+- 理论根：ai-native-theory/specs/知识生命周期执行包规范-KLP.md（shadow 档采纳）
