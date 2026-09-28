@@ -120,3 +120,27 @@ timestamp: 2026-09-27
 6. https://github.com/tic-top/llm2jev（pushed 2026-09-24）
 7. `docs/Jev-开源实现集成评估.md`（2026-09-26，9 项目快照 + 三种兼容框架）
 8. `router/systemone_engine.go` / `router/systemone_http.go`（seam 实体）
+
+---
+
+## 附：R3（laya）补充核验（2026-09-27 深夜，响应用户质询）
+
+**用户问：laya 不是毫秒级吗？——核实结果：是，且比本评估原先掌握的更具体。**
+
+新核验事实（当日抓取上游 README/docs）：
+
+| # | 事实 | 来源 |
+|---|---|---|
+| F10 | **33ms/单问、7.2ms/问（批量），实测于 NVIDIA T4 GPU**；单次前向、非自回归、无文本生成 | LeonaDavinci/laya-system-one README |
+| F11 | 模型 = mmBERT-base **322M 参数**编码器（multilingual，100+ 语言，ctx 1024）——不是固定类目分类器，是 **label-agnostic 的 typed-decision 引擎**（choice/score/noul over 任意 criteria）→ 架构上能做 fast-router 的 10 类任务路由 | 同上 |
+| F12 | laya.cpp 二进制仅 **Windows/Linux x64（CUDA/Vulkan）+ macOS arm64（CoreML）**；**无 macOS x64**；本机（Intel）需源码构建（ggml CPU 或 Vulkan@AMD） | lkarlslund/laya.cpp README |
+| F13 | laya.cpp README 的"性能"表全部是**相对 Python 的吞吐倍数**（1.2-2.7×），无绝对延迟；绝对毫秒数字来自 Python 主仓库（F10） | 两仓 README 对照 |
+
+对本评估结论的修正与维持：
+
+1. **维持**：R3 的判定仍受同一道门挡着——**P1 在我们 30 样本上未测**。P1=73.3% 属于 Ornith-9B；Laya 是 322M 编码器 + RLCD 训练，公开数据集上声称优于 Jev，但 agent 路由任务集上未验证。
+2. **修正（升级）**：原先把"唯一可能 <1s"当作待验假设；现在确认毫秒级（GPU）/ 大概率亚秒（CPU 推算：322M 单前向 ≈ 百毫秒级，仍比当前 38.6s 快两个数量级）。**若 P1 达标，R3 从 spike only 升级为最优路线**——322M 单前向从根上消灭 P2，而非靠 R5 架构摊销。
+3. **新增摩擦**：F12——本机无官方二进制，spike 需源码构建（CMake + ICU + nlohmann-json，ggml CPU 路径）。
+4. 与 R1（jev-rs）的关系：R1 保留任意 GGUF（P1 理论不变）但 P2 不降；R3 反之（P2 根除但 P1 重验）。二者是**正交的对照实验**，不互斥。
+
+**修正后的裁决**：R3 spike 优先级上调为与 R1 并列的对照线①.5——前提是本机源码构建可行；若用户实际部署设备是 Apple Silicon（arm64 CoreML 有官方二进制），R3 直接升为首选实验。
