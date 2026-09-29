@@ -708,3 +708,15 @@ Candidate 变更：C-010（9B 干净模板复测）→ **active**（73.3% 确认
 - 提交链：0a8e0d4（级联）→ 97d26cf（L1）→ df95c6c/59a6a93/b912161（minimind 研究线）→ 6f381c0（KLP 映射）→ fc521db（深挖）→ 8bab4da（血统）→ b3ddc51（训练日志）→ 04f765c（E2 负结果）
 - 关键文档：docs/自训练证据链深挖-2026-09-28.md、docs/minimind-研究笔记.md、docs/ai-native-theory包-研读与映射-2026-09-28.md
 - 理论根：ai-native-theory/specs/知识生命周期执行包规范-KLP.md（shadow 档采纳）
+
+### v0.7 附录 2：MoA 研究联动（2026-09-29）
+
+| ID | 经验 | 状态 | recheck_condition | use_status |
+|---|---|---|---|---|
+| C-017 | 置信度门控 MoA 升级路径（scorer conf<θ → fan-out+聚合；工具调用暂缓） | candidate | verdicts 积累后按任务类型评估收益 | not_used |
+
+新增 DecisionRecord：
+
+| 预测 | 事前 | 核实 | 结果 | Surprise |
+|---|---|---|---|---|
+| MoA 命题与本仓互补性发现独立可比 | 0.8 | 论文机制（错误分布不同→聚合收割）与深挖实测（错误集不相交）完全同构 | 命中 | 跨层互证（生成层/分类层）——互补性是一般性质的强证据 |
