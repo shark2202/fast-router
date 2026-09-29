@@ -79,8 +79,8 @@ func TestFastTierFailureFallsBackToHint(t *testing.T) {
 	if err != nil {
 		t.Fatalf("route() error = %v", err)
 	}
-	if dec.Via != "hint" || dec.ModelID != "client-hint" {
-		t.Fatalf("fallback = %+v, want hint/client-hint", dec)
+	if dec.Via != "hint" || dec.ModelID != "anthropic/claude-haiku-4-5" {
+		t.Fatalf("fallback = %+v, want hint on default upstream (anthropic) with resolved real model", dec)
 	}
 	// slow tier still backfills
 	waitFor(t, 2*time.Second, "slow backfill", func() bool {

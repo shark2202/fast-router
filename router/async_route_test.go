@@ -95,8 +95,8 @@ func TestAsyncRouteServesFallbackThenBackfills(t *testing.T) {
 	if elapsed >= 80*time.Millisecond {
 		t.Fatalf("route() blocked %v — async path must not wait for scoring", elapsed)
 	}
-	if dec.Upstream.Name != "openai" || dec.ModelID != "client-hint" {
-		t.Fatalf("fallback = %q/%q, want openai/client-hint", dec.Upstream.Name, dec.ModelID)
+	if dec.Upstream.Name != "openai" || dec.ModelID != "qwen/qwen-max" {
+		t.Fatalf("fallback = %q/%q, want openai + resolved real model (virtual name contract)", dec.Upstream.Name, dec.ModelID)
 	}
 	// background score spawned (goroutine may not have started yet — wait for it)
 	waitFor(t, 2*time.Second, "score spawned", func() bool { return engine.callCount() >= 1 })
@@ -161,8 +161,8 @@ func TestAsyncRouteEngineErrorDoesNotPoisonCache(t *testing.T) {
 	if err != nil {
 		t.Fatalf("route() error = %v — async path must absorb engine errors", err)
 	}
-	if dec.Upstream.Name != "openai" || dec.ModelID != "client-hint" {
-		t.Fatalf("fallback = %q/%q", dec.Upstream.Name, dec.ModelID)
+	if dec.Upstream.Name != "openai" || dec.ModelID != "qwen/qwen-max" {
+		t.Fatalf("fallback = %q/%q, want openai + resolved real model (virtual name contract)", dec.Upstream.Name, dec.ModelID)
 	}
 
 	// score fails; inflight cleared; cache stays empty

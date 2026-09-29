@@ -54,7 +54,7 @@ func TestVerdictRecordedOK(t *testing.T) {
 	if e.Via != "hint" || e.TaskTurn != "new" || e.Outcome != "ok" || e.Status != 200 {
 		t.Fatalf("event = %+v", e)
 	}
-	if e.ModelID != "m" || e.Upstream != "openai" || e.Session == "" {
+	if e.ModelID != "qwen/qwen-max" || e.Upstream != "openai" || e.Session == "" { // virtual "m" resolves to the cheapest real model
 		t.Fatalf("event = %+v", e)
 	}
 }
@@ -181,7 +181,7 @@ func TestVersionedBaseURL(t *testing.T) {
 		"https://open.bigmodel.cn/api/paas/v4": true,
 		"https://api.openai.com/v1":            true,
 		"https://api.anthropic.com":            false,
-		"https://api.deepseek.com/v1/":         true, // trailing slash tolerated
+		"https://api.deepseek.com/v1/":         true,  // trailing slash tolerated
 		"https://example.com/very":             false, // letters after v
 		"https://example.com/v":                false, // no digits
 		"https://example.com/v12":              true,
