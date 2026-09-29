@@ -21,6 +21,10 @@ timestamp: 2026-09-28T18:00:00+08:00
 * [架构设计 v0.2](../docs/fast-router-架构设计-v0.2.md) - litellm/schema fact 校验后的目标架构。
 * [智能路由设计共识](../docs/fast-router-智能路由设计共识-v0.1.md) - 任务轮、Jev、挡死、选模和回流设计。
 * [知识沉淀 v0.1](../docs/fast-router-知识沉淀-v0.1.md) - AI-native 五阶段知识闭环（含 v0.2-v0.7 增量）。
+* [Jev 路由决策效果评估](../docs/Jev路由决策效果评估-2026-09-28.md) - 区分运行成功、任务判定正确和选模因果收益。
+* [CPU LLM 推理方案评估](../docs/CPU-LLM推理方案评估-2026-09-29.md) - CPU 推理优化、专用小模型与 fast-router 实测边界。
+* [Kev System One 决策模型深度研究](../docs/Kev-System-One决策模型深度研究-2026-09-29.md) - Kev 的 decision-native 架构、System One 接口兼容性、质量证据与 Intel CPU 集成边界。
+* [Qwen3.8-27B-in-C 深度研究](../docs/Qwen3.8-27B-in-C深度研究-2026-09-29.md) - 原生 C CPU 推理性能、正确性、macOS 构建实测及其与 System One 的接口差异。
 * [Python POC 进展](../docs/fast-router-POC进展-v0.1.md) - 早期模型准确率、延迟与边界记录。
 * [架构设计 v0.1](../docs/fast-router-架构设计-v0.1.md) - fact 校验前的草案，主要用于历史对照。
 

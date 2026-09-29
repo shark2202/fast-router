@@ -1,5 +1,26 @@
 # Wiki Update Log
 
+## 2026-09-29（Kev 与 Qwen3.8 CPU 决策/推理研究）
+
+* **Research**: 新增 [Kev System One 决策模型深度研究](../docs/Kev-System-One决策模型深度研究-2026-09-29.md)，固定 main 提交并审查其 pointer head、System One API、模型卡、服务端与研究流程。
+* **Finding**: Kev 与 fast-router 已有 HTTP System One seam 协议接近，可作为 sidecar POC；通用 benchmark 不是 fast-router A–J 路由质量证据，且 Intel x64 CPU 延迟未公开验证。建议 Kev-0.8B/4B 先做 shadow，不直接替换生产引擎。
+* **Research**: 新增 [Qwen3.8-27B-in-C 深度研究](../docs/Qwen3.8-27B-in-C深度研究-2026-09-29.md)，区分 CPU chat runtime 与 Jev/System One 决策引擎，并核验性能/精度边界。
+* **Verification**: 在 Intel i7-9750H macOS 上，上游固定快照 `make portable` 构建及单元测试通过；`make strict` 因 `_SC_AVPHYS_PAGES` 未声明失败。未下载模型权重，未进行真实推理 benchmark。
+* **Decision**: Qwen3.8 C 作为 CPU runtime 研究参考/独立本地 chat-upstream candidate；不是可直接替换 Jev 的 System One engine。此次仅新增研究文档并同步索引，未修改业务代码。
+
+## 2026-09-29（CPU LLM 推理方案评估）
+
+* **Research**: 新增 [CPU LLM 推理方案评估](../docs/CPU-LLM推理方案评估-2026-09-29.md)，结合 llama.cpp/OpenVINO 官方资料与本项目历史 P1/P2 实测，区分换 runtime、优化 kernel 与更换专用小模型三条路线。
+* **Finding**: CPU 推理有成熟方案，但不能靠换引擎消除 9B 多候选 scoring 的计算/内存搬运成本；本地 Laya CPU 更快但 P1=56.7%，64M 专用 scorer 在 30 条集 P1=73.3% 且约 2.6s/10 前向，均需保留统计与训练数据边界。llama.cpp OpenVINO backend 可保留 GGUF，但官方构建路径为 Linux/Windows，验证重点 Core Ultra 1/2，Qwen3.5 9B CPU stateful 未通过，量化准确率/性能仍在验证中。
+* **Recommendation**: 保留 9B 质量基线；先测试 64M fast tier + shadow、llama.cpp 参数 sweep、KV/prompt 复用；OpenVINO 只能在 Linux/Windows Intel 环境做 stateless/目标场景对照，不能直接替换当前批量 KV scorer；交互延迟要求用已验证的异步首评，不能承诺通用 9B CPU 同步亚秒。
+
+## 2026-09-28（Jev 路由决策效果评估）
+
+* **Research**: 新增 [Jev 路由决策效果评估](../docs/Jev路由决策效果评估-2026-09-28.md)，明确当前 `verdicts.jsonl` 只能证明 HTTP/上游运行结果，不能直接证明 Jev task code 正确或选模优于候选。
+* **Model**: 将评估拆成采集层、运行层、决策层、因果层；补充 `inherit` 去重、错误分类、反馈偏置和 shadow/A-B 方案。
+* **Boundary**: 当前 `ok_rate` 降级为运行代理指标；`train_log` 只作为 fast/slow 漂移与分歧数据，不作为外部真值。
+* **Next**: P0 增加 request/decision 关联、延迟、版本、token、error_class；P1 离线报表；P2 独立 task label 与 baseline；P3 session-level shadow/A-B。
+
 ## 2026-09-28（离线六平台交叉构建 POC）
 
 * **Knowledge**: 将六平台交叉构建、离线本地归档和 macOS x64 启动冒烟沉淀为 `docs/fast-router-知识沉淀-v0.1.md` v0.7，按来源/方法/发现/局限/结论记录，并新增 P-018～P-021、L-018～L-021、C-012～C-014。
