@@ -517,13 +517,15 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		if g.engine != nil {
 			g.spawnScore(sessionKey, state, protocol)
 		}
-		return routeDecision{Upstream: g.defaultUpstream(), ModelID: modelHint, Session: sessionKey,
+		up := g.defaultUpstream()
+		return routeDecision{Upstream: up, ModelID: g.resolveHintModel(up.Name, modelHint), Session: sessionKey,
 			TaskTurn: taskTurn, Via: "hint"}, nil
 	}
 
 	// hint-only mode (no scorer configured): skip Jev, use default upstream + client model.
 	if g.engine == nil {
-		return routeDecision{Upstream: g.defaultUpstream(), ModelID: modelHint, Session: sessionKey,
+		up := g.defaultUpstream()
+		return routeDecision{Upstream: up, ModelID: g.resolveHintModel(up.Name, modelHint), Session: sessionKey,
 			TaskTurn: taskTurn, Via: "hint"}, nil
 	}
 
@@ -689,6 +691,36 @@ func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
 		g.cacheRoute(sessionKey, upName, modelID, protocol, taskCode)
 		log.Printf("[route-async] backfilled session route: %s (upstream=%s)", modelID, upName)
 	}()
+}
+
+// resolveHintModel maps the client's model hint to a REAL backend model.
+// The product contract is a FIXED virtual name (e.g. "fast-router"): clients
+// never need to know real model ids. A hint that matches a registry model on
+// the target upstream passes through (client intent); a virtual/unknown name
+// resolves to the cheapest real model on that upstream; if the upstream has
+// no registry entry at all the hint passes through unchanged (legacy escape).
+func (g *Gateway) resolveHintModel(upName, hint string) string {
+	hasMatch := false
+	var cheapest *ModelEntry
+	for i, m := range g.registry {
+		if m.Upstream != upName {
+			continue
+		}
+		if m.ModelID == hint {
+			hasMatch = true
+			break
+		}
+		if cheapest == nil || m.InputCostPer1k < cheapest.InputCostPer1k {
+			cheapest = &g.registry[i]
+		}
+	}
+	if hasMatch {
+		return hint
+	}
+	if cheapest != nil {
+		return cheapest.ModelID
+	}
+	return hint
 }
 
 // defaultUpstream returns a deterministic fallback (hint-only / pre-backfill
