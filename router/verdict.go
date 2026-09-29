@@ -184,6 +184,53 @@ func (s *VerdictStore) Calibrated() map[string]map[string]MeasuredEntry {
 	return out
 }
 
+// UpstreamHealth: recent-window error rate per upstream. healthy when
+// errorRate < 0.5 over at least 3 recent usable events.
+type UpstreamHealth struct {
+	Upstream  string  `json:"upstream"`
+	Events    int     `json:"events"`
+	Errors    int     `json:"errors"`
+	ErrorRate float64 `json:"error_rate"`
+}
+
+// UpstreamHealths computes health from the most recent events (window = 20
+// per upstream). connect_error counts as an upstream problem (quota/网络),
+// unlike model-level calibration where it is excluded.
+func (s *VerdictStore) UpstreamHealths() map[string]UpstreamHealth {
+	out := map[string]UpstreamHealth{}
+	if s == nil {
+		return out
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	// walk newest → oldest, keep last 20 per upstream
+	seen := map[string]int{}
+	for i := len(s.events) - 1; i >= 0; i-- {
+		e := s.events[i]
+		if e.Upstream == "" {
+			continue
+		}
+		if seen[e.Upstream] >= 20 {
+			continue
+		}
+		seen[e.Upstream]++
+		h := out[e.Upstream]
+		h.Upstream = e.Upstream
+		h.Events++
+		if e.Outcome == "upstream_error" || e.Outcome == "connect_error" {
+			h.Errors++
+		}
+		out[e.Upstream] = h
+	}
+	for u, h := range out {
+		if h.Events > 0 {
+			h.ErrorRate = float64(h.Errors) / float64(h.Events)
+		}
+		out[u] = h
+	}
+	return out
+}
+
 // calibratedMinSamples: minimum usable verdicts before a (task, model) cell
 // influences selection. Below it the cold-start cheapest-first path applies.
 const calibratedMinSamples = 5

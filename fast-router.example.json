@@ -32,10 +32,17 @@
       "input_cost_per_1k": 5.0,
       "output_cost_per_1k": 15.0,
       "capability_vector": {
-        "code": "high", "reasoning": "high", "long_context": "high",
-        "tool_use": "high", "vision": "high", "multilingual": "high",
-        "general": "high", "structured_output": "high", "creative": "high",
-        "instruction_follow": "high", "math": "high"
+        "code": "high",
+        "reasoning": "high",
+        "long_context": "high",
+        "tool_use": "high",
+        "vision": "high",
+        "multilingual": "high",
+        "general": "high",
+        "structured_output": "high",
+        "creative": "high",
+        "instruction_follow": "high",
+        "math": "high"
       },
       "measured": {}
     },
@@ -47,10 +54,17 @@
       "input_cost_per_1k": 3.0,
       "output_cost_per_1k": 15.0,
       "capability_vector": {
-        "code": "high", "reasoning": "high", "long_context": "high",
-        "tool_use": "high", "vision": "high", "multilingual": "high",
-        "general": "high", "structured_output": "high", "creative": "high",
-        "instruction_follow": "high", "math": "high"
+        "code": "high",
+        "reasoning": "high",
+        "long_context": "high",
+        "tool_use": "high",
+        "vision": "high",
+        "multilingual": "high",
+        "general": "high",
+        "structured_output": "high",
+        "creative": "high",
+        "instruction_follow": "high",
+        "math": "high"
       },
       "measured": {}
     },
@@ -62,12 +76,40 @@
       "input_cost_per_1k": 0.27,
       "output_cost_per_1k": 1.1,
       "capability_vector": {
-        "code": "high", "reasoning": "high", "long_context": "med",
-        "tool_use": "low", "vision": "none", "multilingual": "med",
-        "general": "high", "structured_output": "high", "creative": "med",
-        "instruction_follow": "high", "math": "high"
+        "code": "high",
+        "reasoning": "high",
+        "long_context": "med",
+        "tool_use": "low",
+        "vision": "none",
+        "multilingual": "med",
+        "general": "high",
+        "structured_output": "high",
+        "creative": "med",
+        "instruction_follow": "high",
+        "math": "high"
       },
       "measured": {}
     }
-  ]
+  ],
+  "moa": {
+    "enabled": false,
+    "min_confidence": 0.5,
+    "references": [
+      {
+        "upstream": "deepseek",
+        "model": "deepseek/deepseek-chat",
+        "temperature": 0.6
+      },
+      {
+        "upstream": "openai",
+        "model": "openai/gpt-5-mini",
+        "temperature": 0.6
+      }
+    ],
+    "aggregator": {
+      "upstream": "openai",
+      "model": "openai/gpt-5",
+      "temperature": 0.4
+    }
+  }
 }

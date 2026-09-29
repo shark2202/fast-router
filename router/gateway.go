@@ -492,7 +492,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 				budget = 10 * time.Second
 			}
 			fctx, fcancel := context.WithTimeout(ctx, budget)
-			upName, modelID, taskCode, fconf, ferr := scoreRoute(fctx, g.fastEngine, state, g.registry, g.upstreams, g.verdicts.Calibrated())
+			upName, modelID, taskCode, fconf, ferr := scoreRouteHealth(fctx, g.fastEngine, state, g.registry, g.upstreams, g.verdicts.Calibrated(), g.verdicts.UpstreamHealths(), estimateTokens(messages))
 			g.recordTrainSample("fast", sessionKey, state, taskCode, fconf)
 			fcancel()
 			if ferr == nil {
@@ -533,7 +533,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 		state = modelHint
 	}
 
-	upName, modelID, taskCode, sconf, err := scoreRoute(ctx, g.engine, state, g.registry, g.upstreams, g.verdicts.Calibrated())
+	upName, modelID, taskCode, sconf, err := scoreRouteHealth(ctx, g.engine, state, g.registry, g.upstreams, g.verdicts.Calibrated(), g.verdicts.UpstreamHealths(), estimateTokens(messages))
 	g.recordTrainSample("slow", sessionKey, state, taskCode, sconf)
 	if err != nil {
 		return routeDecision{}, err
@@ -552,6 +552,15 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 // safe to call from the request path (under g.mu) or a background goroutine
 // (with snapshots).
 func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry, upstreams map[string]Upstream, measured map[string]map[string]MeasuredEntry) (upstream, modelID, taskCode string, confidence float64, err error) {
+	// delegate: health filter is injected by the gateway (nil-safe)
+	return scoreRouteHealth(ctx, engine, state, registry, upstreams, measured, nil, 0)
+}
+
+// scoreRouteHealth is scoreRoute with upstream health awareness. Unhealthy
+// upstreams (recent error rate >= 0.5 over >= 3 events) are skipped while
+// healthy alternatives exist — a 429-ing upstream stops receiving traffic
+// without waiting for (task,model)-level calibration to catch up.
+func scoreRouteHealth(ctx context.Context, engine SystemOneEngine, state string, registry []ModelEntry, upstreams map[string]Upstream, measured map[string]map[string]MeasuredEntry, health map[string]UpstreamHealth, estTokens int) (upstream, modelID, taskCode string, confidence float64, err error) {
 	// C3: Jev Choice over task types
 	criteria := map[string]string{}
 	for _, t := range SeedTaskTypes {
@@ -575,11 +584,22 @@ func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, regis
 	// keep only models whose upstream is actually configured — otherwise C5
 	// cold-start (cheapest-first) picks e.g. deepseek in a single-upstream
 	// deployment and the whole decision is discarded downstream.
+	// Additional gates: upstream health (recent error rate) and — when a
+	// stateLength hint is provided via the registry request — context window.
 	configured := surv[:0]
 	for _, m := range surv {
-		if _, ok := upstreams[m.Upstream]; ok {
-			configured = append(configured, m)
+		up, ok := upstreams[m.Upstream]
+		if !ok {
+			continue
 		}
+		if h, has := health[m.Upstream]; has && h.Events >= 3 && h.ErrorRate >= 0.5 && len(healthyAlternatives(surv, upstreams, health)) > 0 {
+			continue // skip unhealthy upstream while healthy alternatives exist
+		}
+		if estTokens > 0 && m.ContextWindow > 0 && m.ContextWindow < estTokens {
+			continue // request would exceed this model's context window
+		}
+		_ = up
+		configured = append(configured, m)
 	}
 	surv = configured
 	chosen, err := Select(surv, taskCode, measured)
@@ -588,6 +608,33 @@ func scoreRoute(ctx context.Context, engine SystemOneEngine, state string, regis
 	}
 	log.Printf("[route] C4 blocked %d/%d, C5 selected %s (upstream=%s)", len(registry)-len(surv), len(registry), chosen.ModelID, chosen.Upstream)
 	return chosen.Upstream, chosen.ModelID, taskCode, confidence, nil
+}
+
+// estimateTokens gives a rough request-size hint for context-window gating:
+// ~1.5 bytes/token for CJK-heavy content, ~4 for latin. Deliberately crude —
+// it only needs to catch the "150k request to an 8k model" class of failure.
+func estimateTokens(messages []map[string]any) int {
+	n := 0
+	for _, m := range messages {
+		c, _ := m["content"].(string)
+		n += len(c)
+	}
+	return n / 3
+}
+
+// healthyAlternatives lists survivors on currently-healthy upstreams.
+func healthyAlternatives(surv []ModelEntry, upstreams map[string]Upstream, health map[string]UpstreamHealth) []ModelEntry {
+	var out []ModelEntry
+	for _, m := range surv {
+		if _, ok := upstreams[m.Upstream]; !ok {
+			continue
+		}
+		if h, has := health[m.Upstream]; has && h.Events >= 3 && h.ErrorRate >= 0.5 {
+			continue
+		}
+		out = append(out, m)
+	}
+	return out
 }
 
 // cacheRoute stores a scored route for the session (tool-loop inheritance).
@@ -629,7 +676,7 @@ func (g *Gateway) spawnScore(sessionKey, state, protocol string) {
 		// background ctx: must outlive the request that spawned it (77s+ CPU score)
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
 		defer cancel()
-		upName, modelID, taskCode, aconf, err := scoreRoute(ctx, engine, state, registry, upstreams, g.verdicts.Calibrated())
+		upName, modelID, taskCode, aconf, err := scoreRouteHealth(ctx, engine, state, registry, upstreams, g.verdicts.Calibrated(), g.verdicts.UpstreamHealths(), 0)
 		g.recordTrainSample("slow", sessionKey, state, taskCode, aconf)
 		if err != nil {
 			log.Printf("[route-async] background score failed: %v", err)
