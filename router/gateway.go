@@ -63,6 +63,9 @@ type Gateway struct {
 	// hot reload: closes the PREVIOUS fast-tier backend after a swap
 	fastCloser func()
 
+	// C-017: confidence-gated MoA escalation (nil/disabled = plain routing)
+	moa *MoAConfig
+
 	// two-tier cascade: fast tier = small model, synchronous, gives the first
 	// request an informed route; slow tier (engine) refines in the background.
 	fastEngine SystemOneEngine
@@ -71,6 +74,215 @@ type Gateway struct {
 
 // SetVerdicts attaches the C7 verdict store (nil-safe when never called).
 func (g *Gateway) SetVerdicts(s *VerdictStore) { g.verdicts = s }
+
+// SetMoA attaches the MoA escalation config (C-017).
+func (g *Gateway) SetMoA(m *MoAConfig) { g.moa = m }
+
+// shouldEscalate reports whether this request should take the MoA path.
+func (g *Gateway) shouldEscalate(dec routeDecision, body []byte) bool {
+	if g.moa == nil || !g.moa.Enabled || len(g.moa.References) == 0 {
+		return false
+	}
+	if dec.Confidence <= 0 || dec.Confidence >= g.moa.MinConfidence {
+		return false // gate: only low-confidence routes escalate
+	}
+	if bytes.Contains(body, []byte(`"tools"`)) { // tool-call aggregation unproven — skip
+		return false
+	}
+	return true
+}
+
+// forwardMoA fans the request out to the reference models (parallel,
+// non-streaming), then synthesizes via the aggregator using the normal
+// forwarding path (streaming + schema conversion preserved). Any reference
+// failure is skipped; aggregator failure falls back to the routed model.
+func (g *Gateway) forwardMoA(w http.ResponseWriter, r *http.Request, dec routeDecision, path string, body []byte, clientProto string) {
+	start := time.Now()
+	type refResult struct {
+		name string
+		text string
+	}
+	var mu sync.Mutex
+	var wg sync.WaitGroup
+	results := make([]refResult, 0, len(g.moa.References))
+	for _, ref := range g.moa.References {
+		up, ok := g.upstreams[ref.Upstream]
+		if !ok {
+			continue
+		}
+		wg.Add(1)
+		go func(ref MoAModel, up Upstream) {
+			defer wg.Done()
+			// non-streaming reference call in the reference upstream's protocol
+			rb, _ := schema.ConvertRequest(body, clientProto, up.Protocol)
+			rb = setStreamFalse(rb)
+			rb = rewriteModelField(rb, ref.Model, up.Protocol)
+			url := up.BaseURL + upstreamPath(up.Protocol)
+			req, err := http.NewRequestWithContext(r.Context(), "POST", url, bytes.NewReader(rb))
+			if err != nil {
+				return
+			}
+			req.Header.Set("Content-Type", "application/json")
+			if up.Protocol == "anthropic" {
+				req.Header.Set("x-api-key", up.APIKey)
+				req.Header.Set("anthropic-version", "2023-06-01")
+			} else {
+				req.Header.Set("Authorization", "Bearer "+up.APIKey)
+			}
+			resp, err := g.client.Do(req)
+			if err != nil {
+				log.Printf("[moa] reference %s/%s unreachable: %v", ref.Upstream, ref.Model, err)
+				return
+			}
+			defer resp.Body.Close()
+			if resp.StatusCode >= 400 {
+				log.Printf("[moa] reference %s/%s status %d", ref.Upstream, ref.Model, resp.StatusCode)
+				return
+			}
+			rbody, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+			if text := extractAssistantText(rbody, up.Protocol); text != "" {
+				mu.Lock()
+				results = append(results, refResult{name: ref.Model, text: text})
+				mu.Unlock()
+			}
+		}(ref, up)
+	}
+	wg.Wait()
+	if len(results) == 0 {
+		log.Printf("[moa] no reference survived — falling back to routed model")
+		g.forward(w, r, dec, path, body, clientProto)
+		return
+	}
+	// build the aggregator request: original body + reference answers as context
+	agg := g.moa.Aggregator
+	aggUp, ok := g.upstreams[agg.Upstream]
+	if !ok {
+		g.forward(w, r, dec, path, body, clientProto)
+		return
+	}
+	var sb strings.Builder
+	sb.WriteString("You are synthesizing a final answer. Consider these reference answers from other models:\n\n")
+	for i, res := range results {
+		sb.WriteString(fmt.Sprintf("=== Reference %d (%s) ===\n%s\n\n", i+1, res.name, res.text))
+	}
+	sb.WriteString("=== Your task ===\nSynthesize the best final answer, using the references where they help and your own judgment where they don't. Respond directly with the final answer.")
+	aggBody := appendReferenceContext(body, sb.String(), clientProto)
+	aggBody = rewriteModelField(aggBody, agg.Model, aggUp.Protocol)
+	aggDec := dec
+	aggDec.Upstream = aggUp
+	aggDec.ModelID = agg.Model
+	log.Printf("[moa] escalated session=%s task=%s conf=%.2f refs=%d agg=%s (%.0fms)",
+		dec.Session, dec.TaskCode, dec.Confidence, len(results), agg.Model, float64(time.Since(start).Milliseconds()))
+	g.forward(w, r, aggDec, path, aggBody, clientProto)
+}
+
+// setStreamFalse forces stream:false in an openai- or anthropic-protocol body.
+func setStreamFalse(body []byte) []byte {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return body
+	}
+	m["stream"] = false
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// rewriteModelField rewrites the "model" field for the target protocol.
+func rewriteModelField(body []byte, model, proto string) []byte {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return body
+	}
+	m["model"] = model
+	if proto == "anthropic" {
+		if _, ok := m["max_tokens"]; !ok {
+			m["max_tokens"] = 4096
+		}
+	}
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// extractAssistantText pulls the assistant text from a completed response.
+func extractAssistantText(body []byte, proto string) string {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return ""
+	}
+	if proto == "anthropic" {
+		if content, ok := m["content"].([]any); ok && len(content) > 0 {
+			if blk, ok := content[0].(map[string]any); ok {
+				if t, ok := blk["text"].(string); ok {
+					return t
+				}
+			}
+		}
+		return ""
+	}
+	if choices, ok := m["choices"].([]any); ok && len(choices) > 0 {
+		if ch, ok := choices[0].(map[string]any); ok {
+			if msg, ok := ch["message"].(map[string]any); ok {
+				if t, ok := msg["content"].(string); ok {
+					return t
+				}
+			}
+		}
+	}
+	return ""
+}
+
+// appendReferenceContext appends the reference block into the last user turn
+// (both protocols carry messages; appended as a prefixed section).
+func appendReferenceContext(body []byte, context, clientProto string) []byte {
+	var m map[string]any
+	if json.Unmarshal(body, &m) != nil {
+		return body
+	}
+	msgs, ok := m["messages"].([]any)
+	if !ok || len(msgs) == 0 {
+		return body
+	}
+	// find last user message and append the context to its content
+	for i := len(msgs) - 1; i >= 0; i-- {
+		msg, ok := msgs[i].(map[string]any)
+		if !ok {
+			continue
+		}
+		if role, _ := msg["role"].(string); role != "user" {
+			continue
+		}
+		switch content := msg["content"].(type) {
+		case string:
+			msg["content"] = content + "\n\n" + context
+		case []any:
+			// anthropic blocks: append a text block
+			msg["content"] = append(content, map[string]any{"type": "text", "text": "\n\n" + context})
+		}
+		break
+	}
+	m["stream"] = true // aggregator may stream back to the client
+	out, err := json.Marshal(m)
+	if err != nil {
+		return body
+	}
+	return out
+}
+
+// upstreamPath returns the chat-completions path for a protocol
+// (versioned base URLs are already handled in forward; MoA references go
+// through plain path joining here — keep base URLs unversioned for MoA refs).
+func upstreamPath(proto string) string {
+	if proto == "anthropic" {
+		return "/v1/messages"
+	}
+	return "/v1/chat/completions"
+}
 
 // SetTrainLog attaches the scorer-evaluation logger (data/train_log.jsonl).
 func (g *Gateway) SetTrainLog(path string) { g.trainLog = newTrainLogger(path) }
@@ -113,12 +325,13 @@ func (g *Gateway) SwapFastEngine(e SystemOneEngine, closer func()) {
 
 // routeDecision: what route() decided, with the metadata C7 needs.
 type routeDecision struct {
-	Upstream Upstream
-	ModelID  string
-	Session  string
-	TaskTurn string // "new" | "continue"
-	TaskCode string // A-J for jev routes (inherited on continuation)
-	Via      string // "jev" | "hint" | "inherit" | "strong-hint"
+	Upstream   Upstream
+	ModelID    string
+	Session    string
+	TaskTurn   string  // "new" | "continue"
+	TaskCode   string  // A-J for jev routes (inherited on continuation)
+	Via        string  // "jev" | "hint" | "inherit" | "strong-hint" | "fast"
+	Confidence float64 // scorer confidence (0 when unknown) — MoA escalation gate
 }
 
 type cachedRoute struct {
@@ -184,6 +397,10 @@ func (g *Gateway) handleOpenAI(w http.ResponseWriter, r *http.Request) {
 	}
 	// rewrite model field to the chosen upstream model, forward.
 	rewritten := g.rewriteOpenAIModel(body, dec.ModelID)
+	if g.shouldEscalate(dec, rewritten) {
+		g.forwardMoA(w, r, dec, "/v1/chat/completions", body, "openai")
+		return
+	}
 	g.forward(w, r, dec, "/v1/chat/completions", rewritten, "openai")
 }
 
@@ -207,6 +424,10 @@ func (g *Gateway) handleAnthropic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	rewritten := g.rewriteAnthropicModel(body, dec.ModelID)
+	if g.shouldEscalate(dec, rewritten) {
+		g.forwardMoA(w, r, dec, "/v1/messages", body, "anthropic")
+		return
+	}
 	g.forward(w, r, dec, "/v1/messages", rewritten, "anthropic")
 }
 
@@ -283,7 +504,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 						g.spawnScore(sessionKey, state, protocol) // slow tier refines
 					}
 					return routeDecision{Upstream: up, ModelID: modelID, Session: sessionKey,
-						TaskTurn: taskTurn, TaskCode: taskCode, Via: "fast"}, nil
+						TaskTurn: taskTurn, TaskCode: taskCode, Via: "fast", Confidence: fconf}, nil
 				}
 			}
 			// fast tier failed/timed out — hint fallback + slow spawn below
@@ -324,7 +545,7 @@ func (g *Gateway) route(ctx context.Context, messages []map[string]any, modelHin
 	// cache route for this session (tool-loop continuations inherit it)
 	g.cacheRoute(sessionKey, upName, modelID, protocol, taskCode)
 	return routeDecision{Upstream: up, ModelID: modelID, Session: sessionKey,
-		TaskTurn: taskTurn, TaskCode: taskCode, Via: "jev"}, nil
+		TaskTurn: taskTurn, TaskCode: taskCode, Via: "jev", Confidence: sconf}, nil
 }
 
 // scoreRoute: C3 evaluate + C4 match + C5 select. Reads no Gateway state —

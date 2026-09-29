@@ -13,6 +13,7 @@ import (
 // Config is the persistent gateway configuration.
 type Config struct {
 	Listen     string                 `json:"listen"`      // ":8080"
+	MoA        MoAConfig              `json:"moa"`         // C-017: confidence-gated Mixture-of-Agents escalation
 	AsyncScore *bool                  `json:"async_score"` // R5: absent → true (async first-score + cache); false restores blocking Jev
 	Model      ModelConfig            `json:"model"`       // GGUF model + lib paths
 	Upstreams  map[string]UpstreamCfg `json:"upstreams"`   // name -> upstream config
@@ -91,4 +92,24 @@ func (c *Config) ToUpstreams() map[string]Upstream {
 		out[name] = Upstream{Name: name, BaseURL: u.BaseURL, APIKey: u.APIKey, Protocol: u.Protocol}
 	}
 	return out
+}
+
+// MoAConfig: confidence-gated MoA escalation (C-017). Requests whose scorer
+// confidence is below MinConfidence fan out to References (parallel, each
+// non-streaming) and the collected answers are synthesized by the Aggregator
+// (streamed back through the normal forwarding path). Tool-call requests are
+// excluded (aggregating structured tool_calls is unproven); aggregator failure
+// falls back to the normally routed model.
+type MoAConfig struct {
+	Enabled       bool       `json:"enabled"`
+	MinConfidence float64    `json:"min_confidence"` // escalate when 0 < conf < this
+	References    []MoAModel `json:"references"`
+	Aggregator    MoAModel   `json:"aggregator"`
+}
+
+// MoAModel names one MoA participant.
+type MoAModel struct {
+	Upstream    string  `json:"upstream"`
+	Model       string  `json:"model"`
+	Temperature float64 `json:"temperature"`
 }

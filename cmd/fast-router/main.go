@@ -72,6 +72,10 @@ func main() {
 		log.Printf("no model configured — running in hint-only mode (set model.path via admin UI to enable Jev)")
 	}
 	gw.SetAsyncScore(cfg.AsyncScoreEnabled())
+	if cfg.MoA.Enabled {
+		gw.SetMoA(&cfg.MoA)
+		log.Printf("MoA escalation enabled (refs=%d agg=%s gate conf<%.2f)", len(cfg.MoA.References), cfg.MoA.Aggregator.Model, cfg.MoA.MinConfidence)
+	}
 	gw.SetVerdicts(router.NewVerdictStore("data/verdicts.jsonl"))
 	gw.SetTrainLog("data/train_log.jsonl")
 
