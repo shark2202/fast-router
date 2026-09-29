@@ -1,6 +1,6 @@
 # HANDOFF — fast-router v1.0
 
-> **Next session focus**: complete real-upstream roundtrip (GLM key has no balance) + C8 LLM-scout/manual review on top of /api/measured + Windows on-device test + codex/claude code real agent integration. (Landed 2026-09-27/28: R5 async + batch KV-reuse + template fix + C7 verdict loop + 9B revalidation (P1=73.3%, P2 38.6s) + laya spike (P1=56.7%, rejected) + two-tier cascade scoring — first request 3.87s informed route, continuations 0.98ms via fast-tier seeded cache.)
+> **Next session focus**: IGNITE the self-training loop: real upstream key + agent traffic (fuel), then scripts/distill/auto_retrain.sh cycles (mechanics all landed: hot reload + auto trigger); complete real-upstream roundtrip (GLM key has no balance) + C8 LLM-scout/manual review on top of /api/measured + Windows on-device test + codex/claude code real agent integration. (Landed 2026-09-27/28: R5 async + batch KV-reuse + template fix + C7 verdict loop + 9B revalidation (P1=73.3%, P2 38.6s) + laya spike (P1=56.7%, rejected) + two-tier cascade scoring — first request 3.87s informed route, continuations 0.98ms via fast-tier seeded cache.)
 
 ---
 
