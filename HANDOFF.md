@@ -32,6 +32,7 @@ A local-first LLM smart router gateway. Clients (codex/claude code/pi-agent) sen
 | MiniMind research (L4 path) | `docs/minimind-研究笔记.md` |
 | MoA research (arXiv 2406.04692 + Hermes) | `docs/MoA-研究笔记-2026-09-29.md` |
 | Product/ops manual v1.1 | `docs/fast-router-产品运维手册-v1.1.md` |
+| Role manuals (user/deploy/ops) | `docs/manual/` |
 | minimind 64M floor spike (pipeline+P1 10%) | `docs/minimind-研究笔记.md` 附录 |
 | Build/pack/distribute SOP | `SOP/build.md` |
 | Design consensus (grilling Q1-Q10) | `docs/fast-router-智能路由设计共识-v0.1.md` |
