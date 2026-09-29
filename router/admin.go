@@ -12,14 +12,15 @@ import (
 	"io"
 	"net/http"
 	"sync"
+	"time"
 )
 
 // Admin serves the config web UI + REST API, with hot-reload of gateway upstreams.
 type Admin struct {
-	cfg        *Config
-	cfgPath    string
-	gateway    *Gateway
-	mu         sync.Mutex
+	cfg     *Config
+	cfgPath string
+	gateway *Gateway
+	mu      sync.Mutex
 
 	// model download state
 	downloadInProgress bool
@@ -61,6 +62,12 @@ func (a *Admin) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.getVerdicts(w, r)
 	case "/api/measured":
 		a.getMeasured(w, r)
+	case "/api/model/reload":
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", 405)
+			return
+		}
+		a.postModelReload(w, r)
 	case "/api/upstream/test":
 		a.testUpstream(w, r)
 	default:
@@ -162,9 +169,9 @@ func (a *Admin) testUpstream(w http.ResponseWriter, r *http.Request) {
 	}
 	defer resp.Body.Close()
 	json.NewEncoder(w).Encode(map[string]any{
-		"ok":         resp.StatusCode < 400,
-		"status":     resp.StatusCode,
-		"upstream":   req.Name,
+		"ok":       resp.StatusCode < 400,
+		"status":   resp.StatusCode,
+		"upstream": req.Name,
 	})
 }
 
@@ -323,4 +330,36 @@ func (a *Admin) getMeasured(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	json.NewEncoder(w).Encode(a.gateway.Verdicts().Measured())
+}
+
+// postModelReload: hot-swap the fast tier without restarting the gateway.
+// Body: {"fast_path": "/path/to/new.gguf"} (defaults to cfg.Model.FastPath).
+// The load takes a few seconds (small model); the swap itself is atomic.
+func (a *Admin) postModelReload(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		FastPath string `json:"fast_path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil && err != io.EOF {
+		http.Error(w, "invalid json: "+err.Error(), 400)
+		return
+	}
+	path := req.FastPath
+	if path == "" {
+		path = a.cfg.Model.FastPath
+	}
+	if path == "" {
+		http.Error(w, "no fast_path configured or provided", 400)
+		return
+	}
+	start := time.Now()
+	backend, err := NewZigBackend(a.cfg.Model.Lib, path)
+	if err != nil {
+		http.Error(w, "load failed: "+err.Error(), 500)
+		return
+	}
+	engine := NewNativeSystemOneEngine(NewScorer(backend, "jev-fast"))
+	a.gateway.SwapFastEngine(engine, func() { backend.Close() })
+	json.NewEncoder(w).Encode(map[string]any{
+		"ok": true, "fast_path": path, "load_ms": time.Since(start).Milliseconds(),
+	})
 }

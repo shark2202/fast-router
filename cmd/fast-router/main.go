@@ -65,16 +65,7 @@ func main() {
 		engine := router.NewNativeSystemOneEngine(scorer)
 		gw = router.NewGateway(engine, registry, cfg.ToUpstreams())
 		log.Printf("Jev scorer ready (model=%s)", cfg.Model.Path)
-		if cfg.Model.FastPath != "" {
-			fbackend, ferr := router.NewZigBackend(cfg.Model.Lib, cfg.Model.FastPath)
-			if ferr != nil {
-				log.Printf("warn: fast-tier model failed to load (%v) — first turns fall back to hint routing", ferr)
-			} else {
-				defer fbackend.Close()
-				gw.SetFastEngine(router.NewNativeSystemOneEngine(router.NewScorer(fbackend, "jev-fast")))
-				log.Printf("fast tier ready (model=%s) — first-turn synchronous routing enabled", cfg.Model.FastPath)
-			}
-		}
+
 	} else {
 		// No model configured — gateway runs in hint-only mode (model-name strong hint bypasses Jev).
 		gw = router.NewGateway(nil, registry, cfg.ToUpstreams())
@@ -83,6 +74,18 @@ func main() {
 	gw.SetAsyncScore(cfg.AsyncScoreEnabled())
 	gw.SetVerdicts(router.NewVerdictStore("data/verdicts.jsonl"))
 	gw.SetTrainLog("data/train_log.jsonl")
+
+	// fast tier loads independently of the 9B (fast-only deployments are valid:
+	// small model synchronous routing without a slow tier)
+	if cfg.Model.FastPath != "" {
+		fbackend, ferr := router.NewZigBackend(cfg.Model.Lib, cfg.Model.FastPath)
+		if ferr != nil {
+			log.Printf("warn: fast-tier model failed to load (%v) — first turns fall back to hint routing", ferr)
+		} else {
+			gw.SwapFastEngine(router.NewNativeSystemOneEngine(router.NewScorer(fbackend, "jev-fast")), func() { fbackend.Close() })
+			log.Printf("fast tier ready (model=%s) — first-turn synchronous routing enabled", cfg.Model.FastPath)
+		}
+	}
 
 	admin := router.NewAdmin(cfg, cfgPath, gw)
 

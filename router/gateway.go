@@ -60,6 +60,9 @@ type Gateway struct {
 	// retraining loop: scorer evaluations for distillation (nil = not configured)
 	trainLog *trainLogger
 
+	// hot reload: closes the PREVIOUS fast-tier backend after a swap
+	fastCloser func()
+
 	// two-tier cascade: fast tier = small model, synchronous, gives the first
 	// request an informed route; slow tier (engine) refines in the background.
 	fastEngine SystemOneEngine
@@ -83,6 +86,30 @@ func (g *Gateway) SetFastEngine(e SystemOneEngine) {
 
 // SetFastBudget overrides the synchronous fast-tier time budget.
 func (g *Gateway) SetFastBudget(d time.Duration) { g.fastBudget = d }
+
+// SwapFastEngine atomically replaces the fast tier (hot reload). The old
+// backend's Close runs after a grace period so in-flight scores (which hold
+// the old backend's own mutex) finish first.
+func (g *Gateway) SwapFastEngine(e SystemOneEngine, closer func()) {
+	g.mu.Lock()
+	old := g.fastEngine
+	oldCloser := g.fastCloser
+	g.fastEngine = e
+	g.fastCloser = closer
+	g.mu.Unlock()
+	if old != nil && oldCloser != nil {
+		grace := g.fastBudget
+		if grace <= 0 {
+			grace = 10 * time.Second
+		}
+		go func() {
+			time.Sleep(2 * grace)
+			oldCloser()
+			log.Printf("[hot-reload] previous fast tier released")
+		}()
+	}
+	log.Printf("[hot-reload] fast tier swapped")
+}
 
 // routeDecision: what route() decided, with the metadata C7 needs.
 type routeDecision struct {

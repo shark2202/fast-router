@@ -199,3 +199,35 @@ func TestTrainLogCapturesBothTiers(t *testing.T) {
 		t.Fatalf("tiers = %v, want [fast slow]", tiers)
 	}
 }
+
+func TestFastEngineHotSwap(t *testing.T) {
+	gw, _, _ := newTestGatewayWithUpstream(t, 200)
+	gw.SetAsyncScore(true)
+	e1 := &recordingEngine{
+		resp: System1Response{Model: "remote", Answers: map[string]Answer{
+			"task_type": {Type: "choice", Choice: "A", Confidence: 1},
+		}},
+	}
+	closed := make(chan struct{})
+	gw.SwapFastEngine(e1, func() { close(closed) }) // initial install with its closer
+	dec, err := gw.route(context.Background(), newTaskMsgs("implement"), "hint", "openai")
+	if err != nil || dec.TaskCode != "A" {
+		t.Fatalf("pre-swap: %+v err=%v", dec, err)
+	}
+	e2 := &recordingEngine{
+		resp: System1Response{Model: "remote", Answers: map[string]Answer{
+			"task_type": {Type: "choice", Choice: "B", Confidence: 1},
+		}},
+	}
+	gw.SetFastBudget(20 * time.Millisecond) // short grace for the test
+	gw.SwapFastEngine(e2, func() { close(closed) })
+	dec, err = gw.route(context.Background(), newTaskMsgs("write a poem"), "hint", "openai")
+	if err != nil || dec.TaskCode != "B" {
+		t.Fatalf("post-swap: %+v err=%v — new engine must serve immediately", dec, err)
+	}
+	select {
+	case <-closed:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("old closer never ran after grace period")
+	}
+}
